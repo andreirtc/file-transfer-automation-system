@@ -1,0 +1,34 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Database (auto-generated)
+database/*.db
+
+# Logs (auto-generated)
+logs/*.log
+
+# Demo artifacts
+demo/source/*
+demo/destination/*
+!demo/source/.gitkeep
+!demo/destination/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

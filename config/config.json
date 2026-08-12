@@ -1,0 +1,15 @@
+{
+    "stability_check_interval": 5,
+    "required_stable_checks": 2,
+    "max_retries": 3,
+    "retry_delay": 10,
+    "hash_algorithm": "sha256",
+    "hash_chunk_size": 65536,
+    "automatic_monitoring": true,
+    "reconciliation_interval": 30,
+    "overwrite_policy": "ask",
+    "temp_file_prefix": ".",
+    "temp_file_suffix": ".transfer_tmp",
+    "log_max_bytes": 5242880,
+    "log_backup_count": 3
+}
