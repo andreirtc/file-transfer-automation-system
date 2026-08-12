@@ -30,18 +30,18 @@ from PySide6.QtWidgets import (
 
 from core.models import FileStatus, TransferRecord, format_file_size
 
-# Color scheme for statuses
+# Color scheme for statuses (Foreground text colors on light background)
 _STATUS_COLORS: dict[FileStatus, str] = {
-    FileStatus.DETECTED: "#64B5F6",     # Light blue
-    FileStatus.PROCESSING: "#FFB74D",   # Orange
-    FileStatus.READY: "#81C784",        # Green
-    FileStatus.QUEUED: "#90CAF9",       # Blue
-    FileStatus.TRANSFERRING: "#4FC3F7", # Cyan
-    FileStatus.VERIFYING: "#CE93D8",    # Purple
-    FileStatus.COMPLETED: "#66BB6A",    # Dark green
-    FileStatus.FAILED: "#EF5350",       # Red
-    FileStatus.SKIPPED: "#BDBDBD",      # Grey
-    FileStatus.CONFLICT: "#FFA726",     # Dark orange
+    FileStatus.DETECTED: "#0078D4",     # Windows Blue
+    FileStatus.PROCESSING: "#D83B01",   # Deep Orange
+    FileStatus.READY: "#107C10",        # Deep Green
+    FileStatus.QUEUED: "#005FB8",       # Dark Blue
+    FileStatus.TRANSFERRING: "#00B7C3", # Cyan
+    FileStatus.VERIFYING: "#881798",    # Magenta
+    FileStatus.COMPLETED: "#107C10",    # Deep Green
+    FileStatus.FAILED: "#C42B1C",       # Deep Red
+    FileStatus.SKIPPED: "#797775",      # Gray
+    FileStatus.CONFLICT: "#D83B01",     # Deep Orange
 }
 
 _COLUMNS = [

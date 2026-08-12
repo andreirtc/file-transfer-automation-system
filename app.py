@@ -45,48 +45,12 @@ def main():
     app.setApplicationName("File Transfer Automation System")
     app.setOrganizationName("FileTransferAutomation")
 
-    # Apply application-wide stylesheet
-    app.setStyleSheet(
-        """
-        QMainWindow {
-            background-color: #FAFAFA;
-        }
-        QGroupBox {
-            font-weight: bold;
-            border: 1px solid #E0E0E0;
-            border-radius: 6px;
-            margin-top: 8px;
-            padding-top: 16px;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 12px;
-            padding: 0 6px;
-        }
-        QTableView {
-            gridline-color: #E0E0E0;
-            selection-background-color: #BBDEFB;
-            alternate-background-color: #F5F5F5;
-        }
-        QTableView::item {
-            padding: 4px 8px;
-        }
-        QHeaderView::section {
-            background-color: #EEEEEE;
-            padding: 6px 8px;
-            border: none;
-            border-bottom: 1px solid #BDBDBD;
-            font-weight: bold;
-        }
-        QToolBar {
-            spacing: 6px;
-            padding: 4px;
-        }
-        QStatusBar {
-            background-color: #EEEEEE;
-        }
-        """
-    )
+    # Load modern Fluent UI stylesheet
+    style_path = PROJECT_ROOT / "gui" / "style.qss"
+    if style_path.exists():
+        app.setStyleSheet(style_path.read_text(encoding="utf-8"))
+    else:
+        logger.warning(f"Stylesheet not found at {style_path}")
 
     # Create and show main window
     window = MainWindow(config, db)

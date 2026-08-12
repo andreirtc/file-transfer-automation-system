@@ -45,30 +45,32 @@ class StatCard(QFrame):
         self.setStyleSheet(
             f"""
             StatCard {{
-                background-color: {color};
+                background-color: #FFFFFF;
+                border: 1px solid #E5E5E5;
+                border-left: 4px solid {color};
                 border-radius: 6px;
-                padding: 8px;
-                min-width: 80px;
+                padding: 4px;
+                min-width: 90px;
             }}
             """
         )
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(2)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
 
         self._count_label = QLabel("0")
-        self._count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        font = QFont()
-        font.setPointSize(18)
+        self._count_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        font = QFont("Segoe UI Variable Display")
+        font.setPointSize(20)
         font.setBold(True)
         self._count_label.setFont(font)
-        self._count_label.setStyleSheet("color: white;")
+        self._count_label.setStyleSheet("color: #1A1A1A; border: none;")
         layout.addWidget(self._count_label)
 
-        self._name_label = QLabel(label)
-        self._name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._name_label.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 11px;")
+        self._name_label = QLabel(label.upper())
+        self._name_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._name_label.setStyleSheet("color: #666666; font-size: 10px; font-weight: bold; letter-spacing: 1px; border: none;")
         layout.addWidget(self._name_label)
 
     def set_count(self, count: int) -> None:
@@ -174,60 +176,23 @@ class DashboardWidget(QWidget):
         controls = QHBoxLayout()
 
         self._btn_start = QPushButton("▶  Start Monitoring")
+        self._btn_start.setObjectName("startButton")
         self._btn_start.setMinimumHeight(36)
-        self._btn_start.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #2E7D32;
-                color: white;
-                font-weight: bold;
-                padding: 6px 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover { background-color: #388E3C; }
-            QPushButton:disabled { background-color: #666666; }
-            """
-        )
         self._btn_start.clicked.connect(self.start_monitoring_requested)
         controls.addWidget(self._btn_start)
 
         self._btn_stop = QPushButton("■  Stop Monitoring")
+        self._btn_stop.setObjectName("stopButton")
         self._btn_stop.setMinimumHeight(36)
         self._btn_stop.setEnabled(False)
-        self._btn_stop.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #C62828;
-                color: white;
-                font-weight: bold;
-                padding: 6px 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover { background-color: #D32F2F; }
-            QPushButton:disabled { background-color: #666666; }
-            """
-        )
         self._btn_stop.clicked.connect(self.stop_monitoring_requested)
         controls.addWidget(self._btn_stop)
 
         controls.addStretch()
 
         self._btn_sync = QPushButton("🔄  SYNC NOW")
+        self._btn_sync.setObjectName("primaryButton")
         self._btn_sync.setMinimumHeight(36)
-        self._btn_sync.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #1565C0;
-                color: white;
-                font-weight: bold;
-                padding: 6px 24px;
-                border-radius: 4px;
-                font-size: 13px;
-            }
-            QPushButton:hover { background-color: #1976D2; }
-            QPushButton:disabled { background-color: #666666; }
-            """
-        )
         self._btn_sync.clicked.connect(self.sync_now_requested)
         controls.addWidget(self._btn_sync)
 
