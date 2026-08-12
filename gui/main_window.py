@@ -1,29 +1,28 @@
 """
 Main window for the File Transfer Automation System.
 
-The top-level QMainWindow that contains:
-- Menu bar (File, Jobs, View, Help)
-- Toolbar with quick actions
+The top-level MSFluentWindow that contains:
+- Left navigation bar
 - Dashboard as the central widget
-- Status bar showing monitoring state and last activity
-
-Coordinates all GUI components with the TransferManager backend.
+- Status messages
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QMessageBox,
-    QStatusBar,
-    QToolBar,
+from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtGui import QCloseEvent, QIcon
+from PySide6.QtWidgets import QApplication
+
+from qfluentwidgets import (
+    MSFluentWindow,
+    NavigationItemPosition,
+    FluentIcon,
+    MessageBox,
+    InfoBar,
+    InfoBarPosition,
 )
 
 from core.models import (
@@ -50,9 +49,9 @@ from services.database_service import DatabaseService
 logger = logging.getLogger("app")
 
 
-class MainWindow(QMainWindow):
+class MainWindow(MSFluentWindow):
     """
-    Main application window.
+    Main application window using Fluent Design.
 
     Connects the DashboardWidget (GUI) with the TransferManager (backend).
     """
@@ -74,115 +73,80 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("File Transfer Automation System")
         self.resize(1200, 800)
 
-        self._dashboard = DashboardWidget(self)
-        self.setCentralWidget(self._dashboard)
+        # Remove the default title bar text if desired, or keep it.
+        # self.titleBar.titleLabel.hide()
 
-        self._setup_menu_bar()
-        self._setup_toolbar()
-        self._setup_status_bar()
+        self._dashboard = DashboardWidget(self)
+        self._dashboard.setObjectName("DashboardInterface")
+
+        self._setup_navigation()
         self._connect_signals()
 
         # Load existing job on startup
         self._load_initial_job()
 
     # ──────────────────────────────────────────────
-    # Menu bar
+    # Navigation Interface
     # ──────────────────────────────────────────────
 
-    def _setup_menu_bar(self):
-        menu_bar = self.menuBar()
+    def _setup_navigation(self):
+        # Add the main dashboard
+        self.addSubInterface(
+            self._dashboard,
+            FluentIcon.HOME,
+            "Dashboard",
+            position=NavigationItemPosition.TOP
+        )
 
-        # File menu
-        file_menu = menu_bar.addMenu("&File")
-        exit_action = QAction("E&xit", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        # Add Job Actions
+        self.navigationInterface.addItem(
+            routeKey="addJob",
+            icon=FluentIcon.ADD,
+            text="Add Job",
+            onClick=self._on_add_job,
+            position=NavigationItemPosition.SCROLL
+        )
+        
+        self.navigationInterface.addItem(
+            routeKey="editJob",
+            icon=FluentIcon.EDIT,
+            text="Edit Job",
+            onClick=self._on_edit_job,
+            position=NavigationItemPosition.SCROLL
+        )
 
-        # Jobs menu
-        jobs_menu = menu_bar.addMenu("&Jobs")
-        add_job_action = QAction("&Add Transfer Job...", self)
-        add_job_action.setShortcut("Ctrl+N")
-        add_job_action.triggered.connect(self._on_add_job)
-        jobs_menu.addAction(add_job_action)
+        self.navigationInterface.addItem(
+            routeKey="history",
+            icon=FluentIcon.HISTORY,
+            text="Transfer History",
+            onClick=self._on_view_history,
+            position=NavigationItemPosition.SCROLL
+        )
 
-        edit_job_action = QAction("&Edit Current Job...", self)
-        edit_job_action.triggered.connect(self._on_edit_job)
-        jobs_menu.addAction(edit_job_action)
+        # Bottom Actions
+        self.navigationInterface.addItem(
+            routeKey="logs",
+            icon=FluentIcon.DOCUMENT,
+            text="View Logs",
+            onClick=self._on_view_logs,
+            position=NavigationItemPosition.BOTTOM
+        )
 
-        # View menu
-        view_menu = menu_bar.addMenu("&View")
-
-        logs_action = QAction("View &Logs...", self)
-        logs_action.setShortcut("Ctrl+L")
-        logs_action.triggered.connect(self._on_view_logs)
-        view_menu.addAction(logs_action)
-
-        history_action = QAction("Transfer &History...", self)
-        history_action.setShortcut("Ctrl+H")
-        history_action.triggered.connect(self._on_view_history)
-        view_menu.addAction(history_action)
-
-        view_menu.addSeparator()
-
-        settings_action = QAction("&Settings...", self)
-        settings_action.triggered.connect(self._on_settings)
-        view_menu.addAction(settings_action)
-
-        # Help menu
-        help_menu = menu_bar.addMenu("&Help")
-        about_action = QAction("&About", self)
-        about_action.triggered.connect(self._on_about)
-        help_menu.addAction(about_action)
-
-    # ──────────────────────────────────────────────
-    # Toolbar
-    # ──────────────────────────────────────────────
-
-    def _setup_toolbar(self):
-        toolbar = QToolBar("Main Toolbar")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-
-        self._start_action = QAction("▶ Start Monitoring", self)
-        self._start_action.triggered.connect(self._on_start_monitoring)
-        toolbar.addAction(self._start_action)
-
-        self._stop_action = QAction("■ Stop Monitoring", self)
-        self._stop_action.setEnabled(False)
-        self._stop_action.triggered.connect(self._on_stop_monitoring)
-        toolbar.addAction(self._stop_action)
-
-        toolbar.addSeparator()
-
-        self._sync_action = QAction("🔄 SYNC NOW", self)
-        self._sync_action.triggered.connect(self._on_sync_now)
-        toolbar.addAction(self._sync_action)
-
-        toolbar.addSeparator()
-
-        add_job_action = QAction("+ Add Job", self)
-        add_job_action.triggered.connect(self._on_add_job)
-        toolbar.addAction(add_job_action)
-
-        settings_action = QAction("⚙ Settings", self)
-        settings_action.triggered.connect(self._on_settings)
-        toolbar.addAction(settings_action)
-
-        logs_action = QAction("📋 Logs", self)
-        logs_action.triggered.connect(self._on_view_logs)
-        toolbar.addAction(logs_action)
-
-    # ──────────────────────────────────────────────
-    # Status bar
-    # ──────────────────────────────────────────────
-
-    def _setup_status_bar(self):
-        self._status_bar = QStatusBar()
-        self.setStatusBar(self._status_bar)
-
-        self._status_label = QStatusBar()
-        self._status_bar.showMessage("Ready")
+        self.navigationInterface.addItem(
+            routeKey="settings",
+            icon=FluentIcon.SETTING,
+            text="Settings",
+            onClick=self._on_settings,
+            position=NavigationItemPosition.BOTTOM
+        )
+        
+        self.navigationInterface.addItem(
+            routeKey="about",
+            icon=FluentIcon.INFO,
+            text="About",
+            onClick=self._on_about,
+            position=NavigationItemPosition.BOTTOM
+        )
 
     # ──────────────────────────────────────────────
     # Signal connections
@@ -240,12 +204,13 @@ class MainWindow(QMainWindow):
             self._dashboard.update_job_info(job)
             self._dashboard.set_records([])
             logger.info("Created new job: '%s'", job.name)
-            self._status_bar.showMessage(f"Job '{job.name}' created", 5000)
+            self._on_log_message("INFO", f"Job '{job.name}' created")
 
     def _on_edit_job(self):
         job = self._manager.current_job
         if not job:
-            QMessageBox.information(self, "No Job", "No job is currently active.")
+            msg = MessageBox("No Job", "No job is currently active.", self)
+            msg.exec()
             return
 
         was_monitoring = self._manager.is_monitoring
@@ -265,11 +230,8 @@ class MainWindow(QMainWindow):
 
     def _on_start_monitoring(self):
         if not self._manager.current_job:
-            QMessageBox.warning(
-                self,
-                "No Job",
-                "Please create a transfer job first.",
-            )
+            msg = MessageBox("No Job", "Please create a transfer job first.", self)
+            msg.exec()
             return
         self._manager.start_monitoring()
 
@@ -278,10 +240,11 @@ class MainWindow(QMainWindow):
 
     def _on_sync_now(self):
         if not self._manager.current_job:
-            QMessageBox.warning(self, "No Job", "Please create a transfer job first.")
+            msg = MessageBox("No Job", "Please create a transfer job first.", self)
+            msg.exec()
             return
 
-        self._status_bar.showMessage("Scanning source folder...")
+        self._on_log_message("INFO", "Scanning source folder...")
 
         ready, processing = self._manager.sync_now()
 
@@ -299,22 +262,16 @@ class MainWindow(QMainWindow):
 
             if action == SyncAction.TRANSFER_READY:
                 count = self._manager.transfer_ready_files()
-                self._status_bar.showMessage(
-                    f"Queued {count} file(s) for transfer", 5000
-                )
+                self._on_log_message("INFO", f"Queued {count} file(s) for transfer")
             elif action == SyncAction.WAIT_ALL:
-                self._status_bar.showMessage(
-                    "Waiting for all files to become ready...", 5000
-                )
+                self._on_log_message("INFO", "Waiting for all files to become ready...")
             else:
-                self._status_bar.showMessage("Sync cancelled", 3000)
+                self._on_log_message("INFO", "Sync cancelled")
         elif ready:
             count = self._manager.transfer_ready_files()
-            self._status_bar.showMessage(
-                f"Queued {count} file(s) for transfer", 5000
-            )
+            self._on_log_message("INFO", f"Queued {count} file(s) for transfer")
         else:
-            self._status_bar.showMessage("No new files to transfer", 5000)
+            self._on_log_message("INFO", "No new files to transfer")
 
     def _on_settings(self):
         dialog = SettingsDialog(self._config, self)
@@ -330,21 +287,18 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _on_about(self):
-        QMessageBox.about(
-            self,
+        msg = MessageBox(
             "About File Transfer Automation System",
-            "<h3>File Transfer Automation System</h3>"
-            "<p>Version 1.0.0 — Local Prototype</p>"
-            "<p>Automated one-way file transfer with:</p>"
-            "<ul>"
-            "<li>File safety detection (incomplete file protection)</li>"
-            "<li>SHA-256 integrity verification</li>"
-            "<li>Persistent transfer history</li>"
-            "<li>Automatic and manual sync modes</li>"
-            "</ul>"
-            "<p>Files are always <b>copied</b>, never moved.</p>"
-            "<p>Source files are never modified or deleted.</p>",
+            "Version 1.0.0 — Local Prototype\n\n"
+            "Automated one-way file transfer with:\n"
+            "- File safety detection (incomplete file protection)\n"
+            "- SHA-256 integrity verification\n"
+            "- Persistent transfer history\n"
+            "- Automatic and manual sync modes\n\n"
+            "Files are always copied, never moved. Source files are never modified or deleted.",
+            self
         )
+        msg.exec()
 
     # ──────────────────────────────────────────────
     # Manager signal handlers
@@ -364,23 +318,16 @@ class MainWindow(QMainWindow):
         if record:
             self._dashboard.update_record(record)
             if result.success:
-                self._status_bar.showMessage(
-                    f"✓ Transferred: {record.file_name}", 5000
-                )
+                self._on_log_message("SUCCESS", f"Transferred: {record.file_name}")
             else:
-                self._status_bar.showMessage(
-                    f"✗ Failed: {record.file_name} — {result.error_message}",
-                    10000,
-                )
+                self._on_log_message("ERROR", f"Failed: {record.file_name} — {result.error_message}")
 
     def _on_monitoring_changed(self, is_monitoring: bool):
         self._dashboard.update_monitoring_status(is_monitoring)
-        self._start_action.setEnabled(not is_monitoring)
-        self._stop_action.setEnabled(is_monitoring)
         if is_monitoring:
-            self._status_bar.showMessage("Monitoring active", 3000)
+            self._on_log_message("INFO", "Monitoring active")
         else:
-            self._status_bar.showMessage("Monitoring stopped", 3000)
+            self._on_log_message("INFO", "Monitoring stopped")
 
     def _on_conflict_detected(self, record: TransferRecord):
         dialog = ConflictDialog(record, self)
@@ -389,7 +336,46 @@ class MainWindow(QMainWindow):
         self._manager.resolve_conflict(record.id, resolution)
 
     def _on_log_message(self, level: str, message: str):
-        self._status_bar.showMessage(message, 5000)
+        if level == "INFO":
+            InfoBar.info(
+                title="Info",
+                content=message,
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3000,
+                parent=self
+            )
+        elif level == "SUCCESS":
+            InfoBar.success(
+                title="Success",
+                content=message,
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3000,
+                parent=self
+            )
+        elif level == "ERROR":
+            InfoBar.error(
+                title="Error",
+                content=message,
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=5000,
+                parent=self
+            )
+        elif level == "WARNING":
+            InfoBar.warning(
+                title="Warning",
+                content=message,
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=4000,
+                parent=self
+            )
 
     # ──────────────────────────────────────────────
     # Window lifecycle

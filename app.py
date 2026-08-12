@@ -45,12 +45,11 @@ def main():
     app.setApplicationName("File Transfer Automation System")
     app.setOrganizationName("FileTransferAutomation")
 
-    # Load modern Fluent UI stylesheet
-    style_path = PROJECT_ROOT / "gui" / "style.qss"
-    if style_path.exists():
-        app.setStyleSheet(style_path.read_text(encoding="utf-8"))
-    else:
-        logger.warning(f"Stylesheet not found at {style_path}")
+    from qfluentwidgets import setTheme, Theme, setThemeColor
+    
+    # Set Fluent UI Theme
+    setTheme(Theme.LIGHT)
+    setThemeColor('#0078D4') # Windows default blue
 
     # Create and show main window
     window = MainWindow(config, db)

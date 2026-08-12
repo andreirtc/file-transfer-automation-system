@@ -16,21 +16,25 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
-    QLabel,
-    QPlainTextEdit,
-    QPushButton,
-    QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QTableWidgetItem
+)
+
+from qfluentwidgets import (
+    MessageBoxBase,
+    MessageBox,
+    PushButton,
+    PrimaryPushButton,
+    SubtitleLabel,
+    BodyLabel,
+    SpinBox,
+    ComboBox,
+    TableWidget,
+    PlainTextEdit,
+    SimpleCardWidget
 )
 
 from core.models import ConflictResolution, FileStatus, SyncAction, TransferRecord
@@ -38,7 +42,7 @@ from services.configuration_service import ConfigurationService
 from services.logging_service import get_log_file_paths
 
 
-class ProcessingWarningDialog(QDialog):
+class ProcessingWarningDialog(MessageBoxBase):
     """
     Warning dialog shown when the user requests sync but files are still processing.
     Offers three choices: Transfer Ready, Wait, or Cancel.
@@ -51,57 +55,56 @@ class ProcessingWarningDialog(QDialog):
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Transfer Warning")
-        self.setMinimumWidth(500)
         self.result_action: SyncAction = SyncAction.CANCEL
+        
+        self.yesButton.hide()
+        self.cancelButton.hide()
+        
+        self.titleLabel = SubtitleLabel("Transfer Warning", self)
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addSpacing(16)
 
-        layout = QVBoxLayout(self)
+        self.widget.setMinimumWidth(500)
 
         # Warning message
-        msg = QLabel(
-            f"<b>{len(processing_files)} file(s) are still being processed:</b>"
-        )
-        layout.addWidget(msg)
+        msg = BodyLabel(f"<b>{len(processing_files)} file(s) are still being processed:</b>", self)
+        self.viewLayout.addWidget(msg)
 
         # List processing files
         for record in processing_files[:10]:
-            detail = QLabel(f"  • {record.file_name} — Status: {record.status.value}")
-            detail.setStyleSheet("color: #FFB74D; padding-left: 16px;")
-            layout.addWidget(detail)
+            detail = BodyLabel(f"  • {record.file_name} — Status: {record.status.value}", self)
+            detail.setStyleSheet("color: #D83B01; padding-left: 16px;")
+            self.viewLayout.addWidget(detail)
 
         if len(processing_files) > 10:
-            layout.addWidget(
-                QLabel(f"  ... and {len(processing_files) - 10} more")
-            )
+            self.viewLayout.addWidget(BodyLabel(f"  ... and {len(processing_files) - 10} more", self))
 
-        layout.addSpacing(16)
+        self.viewLayout.addSpacing(16)
 
         if ready_count > 0:
-            ready_msg = QLabel(
-                f"<b>{ready_count} file(s) are ready to transfer.</b>"
-            )
-            layout.addWidget(ready_msg)
+            ready_msg = BodyLabel(f"<b>{ready_count} file(s) are ready to transfer.</b>", self)
+            self.viewLayout.addWidget(ready_msg)
 
-        layout.addWidget(QLabel("What would you like to do?"))
-        layout.addSpacing(8)
+        self.viewLayout.addWidget(BodyLabel("What would you like to do?", self))
+        self.viewLayout.addSpacing(16)
 
         # Buttons
         btn_layout = QHBoxLayout()
 
-        btn_transfer = QPushButton(f"Transfer Ready Files ({ready_count})")
+        btn_transfer = PrimaryPushButton(f"Transfer Ready Files ({ready_count})", self)
         btn_transfer.setEnabled(ready_count > 0)
         btn_transfer.clicked.connect(self._on_transfer_ready)
         btn_layout.addWidget(btn_transfer)
 
-        btn_wait = QPushButton("Wait for All Files")
+        btn_wait = PushButton("Wait for All Files", self)
         btn_wait.clicked.connect(self._on_wait)
         btn_layout.addWidget(btn_wait)
 
-        btn_cancel = QPushButton("Cancel")
+        btn_cancel = PushButton("Cancel", self)
         btn_cancel.clicked.connect(self._on_cancel)
         btn_layout.addWidget(btn_cancel)
 
-        layout.addLayout(btn_layout)
+        self.viewLayout.addLayout(btn_layout)
 
     def _on_transfer_ready(self):
         self.result_action = SyncAction.TRANSFER_READY
@@ -116,7 +119,7 @@ class ProcessingWarningDialog(QDialog):
         self.reject()
 
 
-class ConflictDialog(QDialog):
+class ConflictDialog(MessageBoxBase):
     """
     Dialog shown when a destination file conflicts with the source.
     Offers Overwrite, Skip, or Cancel.
@@ -128,43 +131,48 @@ class ConflictDialog(QDialog):
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Destination Conflict")
-        self.setMinimumWidth(450)
         self.result_resolution: ConflictResolution = ConflictResolution.CANCEL
+        
+        self.yesButton.hide()
+        self.cancelButton.hide()
 
-        layout = QVBoxLayout(self)
+        self.titleLabel = SubtitleLabel("Destination Conflict", self)
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addSpacing(16)
+        
+        self.widget.setMinimumWidth(450)
 
-        layout.addWidget(
-            QLabel(f"<b>{record.file_name}</b> already exists in the destination "
-                   f"but its contents differ from the source.")
+        self.viewLayout.addWidget(
+            BodyLabel(f"<b>{record.file_name}</b> already exists in the destination "
+                   f"but its contents differ from the source.", self)
         )
-        layout.addSpacing(8)
+        self.viewLayout.addSpacing(8)
 
-        info = QGroupBox("Details")
-        info_layout = QFormLayout()
-        info_layout.addRow("Source:", QLabel(record.source_path))
-        info_layout.addRow("Destination:", QLabel(record.destination_path))
-        info.setLayout(info_layout)
-        layout.addWidget(info)
+        info = SimpleCardWidget(self)
+        info_layout = QFormLayout(info)
+        info_layout.setContentsMargins(16, 16, 16, 16)
+        info_layout.addRow(BodyLabel("Source:", info), BodyLabel(record.source_path, info))
+        info_layout.addRow(BodyLabel("Destination:", info), BodyLabel(record.destination_path, info))
+        self.viewLayout.addWidget(info)
 
-        layout.addSpacing(16)
+        self.viewLayout.addSpacing(16)
 
         btn_layout = QHBoxLayout()
 
-        btn_overwrite = QPushButton("Overwrite")
-        btn_overwrite.setStyleSheet("background-color: #E65100; color: white;")
+        btn_overwrite = PrimaryPushButton("Overwrite", self)
+        btn_overwrite.setStyleSheet("background-color: #C42B1C;")
         btn_overwrite.clicked.connect(self._on_overwrite)
         btn_layout.addWidget(btn_overwrite)
 
-        btn_skip = QPushButton("Skip")
+        btn_skip = PushButton("Skip", self)
         btn_skip.clicked.connect(self._on_skip)
         btn_layout.addWidget(btn_skip)
 
-        btn_cancel = QPushButton("Cancel")
+        btn_cancel = PushButton("Cancel", self)
         btn_cancel.clicked.connect(self._on_cancel)
         btn_layout.addWidget(btn_cancel)
 
-        layout.addLayout(btn_layout)
+        self.viewLayout.addLayout(btn_layout)
 
     def _on_overwrite(self):
         self.result_resolution = ConflictResolution.OVERWRITE
@@ -179,45 +187,52 @@ class ConflictDialog(QDialog):
         self.reject()
 
 
-class LogViewerDialog(QDialog):
+class LogViewerDialog(MessageBoxBase):
     """Read-only viewer for application log files."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("Log Viewer")
-        self.resize(800, 600)
+        
+        self.yesButton.setText("Close")
+        self.cancelButton.hide()
 
-        layout = QVBoxLayout(self)
+        self.titleLabel = SubtitleLabel("Log Viewer", self)
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addSpacing(16)
+        
+        self.widget.setMinimumWidth(800)
+        self.widget.setMinimumHeight(600)
 
         # Log file selector
         selector_layout = QHBoxLayout()
-        selector_layout.addWidget(QLabel("Log file:"))
-        self._log_combo = QComboBox()
+        selector_layout.addWidget(BodyLabel("Log file:", self))
+        
+        self._log_combo = ComboBox(self)
         self._log_paths = get_log_file_paths()
         for name in self._log_paths:
             self._log_combo.addItem(name)
         self._log_combo.currentTextChanged.connect(self._load_log)
         selector_layout.addWidget(self._log_combo)
 
-        btn_refresh = QPushButton("Refresh")
+        btn_refresh = PushButton("Refresh", self)
         btn_refresh.clicked.connect(self._refresh)
         selector_layout.addWidget(btn_refresh)
 
-        layout.addLayout(selector_layout)
+        self.viewLayout.addLayout(selector_layout)
 
         # Log content
-        self._text = QPlainTextEdit()
+        self._text = PlainTextEdit(self)
         self._text.setReadOnly(True)
-        self._text.setFont(self._text.font())
         font = self._text.font()
         font.setFamily("Consolas")
         font.setPointSize(9)
         self._text.setFont(font)
-        layout.addWidget(self._text)
+        self.viewLayout.addWidget(self._text)
 
         # Load first log
-        if self._log_combo.count() > 0:
-            self._load_log(self._log_combo.currentText())
+        if len(self._log_paths) > 0:
+            first_key = list(self._log_paths.keys())[0]
+            self._load_log(first_key)
 
     def _load_log(self, name: str) -> None:
         path = self._log_paths.get(name)
@@ -237,7 +252,7 @@ class LogViewerDialog(QDialog):
         self._load_log(self._log_combo.currentText())
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(MessageBoxBase):
     """Dialog for editing application configuration."""
 
     def __init__(
@@ -246,71 +261,64 @@ class SettingsDialog(QDialog):
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Settings")
-        self.setMinimumWidth(450)
         self._config = config
+        
+        self.yesButton.setText("Save")
+        self.cancelButton.setText("Cancel")
 
-        layout = QVBoxLayout(self)
+        self.titleLabel = SubtitleLabel("Settings", self)
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addSpacing(16)
+        
+        self.widget.setMinimumWidth(450)
 
         form = QFormLayout()
 
         # Stability check interval
-        self._stability_interval = QSpinBox()
+        self._stability_interval = SpinBox(self)
         self._stability_interval.setRange(1, 120)
-        self._stability_interval.setSuffix(" seconds")
         self._stability_interval.setValue(config.stability_check_interval)
-        form.addRow("Stability check interval:", self._stability_interval)
+        form.addRow(BodyLabel("Stability check interval (sec):", self), self._stability_interval)
 
         # Required stable checks
-        self._stable_checks = QSpinBox()
+        self._stable_checks = SpinBox(self)
         self._stable_checks.setRange(1, 20)
         self._stable_checks.setValue(config.required_stable_checks)
-        form.addRow("Required stable checks:", self._stable_checks)
+        form.addRow(BodyLabel("Required stable checks:", self), self._stable_checks)
 
         # Max retries
-        self._max_retries = QSpinBox()
+        self._max_retries = SpinBox(self)
         self._max_retries.setRange(0, 50)
         self._max_retries.setValue(config.max_retries)
-        form.addRow("Max retries:", self._max_retries)
+        form.addRow(BodyLabel("Max retries:", self), self._max_retries)
 
         # Retry delay
-        self._retry_delay = QSpinBox()
+        self._retry_delay = SpinBox(self)
         self._retry_delay.setRange(1, 600)
-        self._retry_delay.setSuffix(" seconds")
         self._retry_delay.setValue(config.retry_delay)
-        form.addRow("Retry delay:", self._retry_delay)
+        form.addRow(BodyLabel("Retry delay (sec):", self), self._retry_delay)
 
         # Reconciliation interval
-        self._recon_interval = QSpinBox()
+        self._recon_interval = SpinBox(self)
         self._recon_interval.setRange(5, 600)
-        self._recon_interval.setSuffix(" seconds")
         self._recon_interval.setValue(config.reconciliation_interval)
-        form.addRow("Reconciliation interval:", self._recon_interval)
+        form.addRow(BodyLabel("Reconciliation interval (sec):", self), self._recon_interval)
 
         # Overwrite policy
-        self._overwrite_policy = QComboBox()
-        self._overwrite_policy.addItem("Ask (show dialog)", "ask")
-        self._overwrite_policy.addItem("Always overwrite", "overwrite")
-        self._overwrite_policy.addItem("Always skip", "skip")
+        self._overwrite_policy = ComboBox(self)
+        self._overwrite_policy.addItem("Ask (show dialog)", userData="ask")
+        self._overwrite_policy.addItem("Always overwrite", userData="overwrite")
+        self._overwrite_policy.addItem("Always skip", userData="skip")
         current_policy = config.overwrite_policy
         for i in range(self._overwrite_policy.count()):
             if self._overwrite_policy.itemData(i) == current_policy:
                 self._overwrite_policy.setCurrentIndex(i)
                 break
-        form.addRow("Overwrite policy:", self._overwrite_policy)
+        form.addRow(BodyLabel("Overwrite policy:", self), self._overwrite_policy)
 
-        layout.addLayout(form)
+        self.viewLayout.addLayout(form)
 
-        # Buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._save)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _save(self):
+    def validate(self) -> bool:
         self._config.set("stability_check_interval", self._stability_interval.value())
         self._config.set("required_stable_checks", self._stable_checks.value())
         self._config.set("max_retries", self._max_retries.value())
@@ -318,10 +326,10 @@ class SettingsDialog(QDialog):
         self._config.set("reconciliation_interval", self._recon_interval.value())
         self._config.set("overwrite_policy", self._overwrite_policy.currentData())
         self._config.save()
-        self.accept()
+        return True
 
 
-class TransferHistoryDialog(QDialog):
+class TransferHistoryDialog(MessageBoxBase):
     """Dialog for browsing past transfer records."""
 
     def __init__(
@@ -330,20 +338,25 @@ class TransferHistoryDialog(QDialog):
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Transfer History")
-        self.resize(900, 500)
+        
+        self.yesButton.setText("Close")
+        self.cancelButton.hide()
 
-        layout = QVBoxLayout(self)
+        self.titleLabel = SubtitleLabel("Transfer History", self)
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addSpacing(16)
+        
+        self.widget.setMinimumWidth(900)
+        self.widget.setMinimumHeight(500)
 
-        layout.addWidget(QLabel(f"<b>{len(records)} records</b>"))
+        self.viewLayout.addWidget(BodyLabel(f"<b>{len(records)} records</b>", self))
 
-        table = QTableWidget()
+        table = TableWidget(self)
         headers = ["File Name", "Status", "Size", "Transfer Time", "Hash", "Error"]
         table.setColumnCount(len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setRowCount(len(records))
         table.setAlternatingRowColors(True)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
         for row, record in enumerate(records):
             table.setItem(row, 0, QTableWidgetItem(record.file_name))
@@ -364,8 +377,4 @@ class TransferHistoryDialog(QDialog):
             table.setItem(row, 5, QTableWidgetItem(record.error_message or ""))
 
         table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(table)
-
-        btn = QPushButton("Close")
-        btn.clicked.connect(self.accept)
-        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
+        self.viewLayout.addWidget(table)

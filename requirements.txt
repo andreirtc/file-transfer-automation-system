@@ -4,3 +4,4 @@ watchdog>=4.0
 
 # Development / Testing
 pytest>=8.0
+PySide6-Fluent-Widgets>=1.11.3

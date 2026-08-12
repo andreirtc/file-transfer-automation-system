@@ -10,25 +10,29 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
     QVBoxLayout,
     QWidget,
+)
+
+from qfluentwidgets import (
+    MessageBoxBase,
+    LineEdit,
+    PushButton,
+    SwitchButton,
+    MessageBox,
+    SubtitleLabel,
+    BodyLabel
 )
 
 from core.models import TransferJob
 
 
-class JobDialog(QDialog):
+class JobDialog(MessageBoxBase):
     """Dialog for creating or editing a transfer job."""
 
     def __init__(
@@ -40,60 +44,61 @@ class JobDialog(QDialog):
         self._job = job or TransferJob()
         self._is_new = job is None
 
-        self.setWindowTitle("Add Transfer Job" if self._is_new else "Edit Transfer Job")
-        self.setMinimumWidth(550)
+        title = "Add Transfer Job" if self._is_new else "Edit Transfer Job"
+        self.titleLabel = SubtitleLabel(title, self)
+        
+        self.yesButton.setText("Save")
+        self.cancelButton.setText("Cancel")
+        self.widget.setMinimumWidth(550)
 
         self._setup_ui()
         self._populate()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        # Add title
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addSpacing(16)
 
         form = QFormLayout()
 
         # Job name
-        self._name_edit = QLineEdit()
+        self._name_edit = LineEdit(self)
         self._name_edit.setPlaceholderText("e.g., Local Test Transfer")
-        form.addRow("Job Name:", self._name_edit)
+        form.addRow(BodyLabel("Job Name:", self), self._name_edit)
 
         # Source folder
         source_layout = QHBoxLayout()
-        self._source_edit = QLineEdit()
+        self._source_edit = LineEdit(self)
         self._source_edit.setPlaceholderText("Source folder path")
         source_layout.addWidget(self._source_edit)
-        btn_source = QPushButton("Browse...")
+        btn_source = PushButton("Browse...", self)
         btn_source.clicked.connect(self._browse_source)
         source_layout.addWidget(btn_source)
-        form.addRow("Source Folder:", source_layout)
+        form.addRow(BodyLabel("Source Folder:", self), source_layout)
 
         # Destination folder
         dest_layout = QHBoxLayout()
-        self._dest_edit = QLineEdit()
+        self._dest_edit = LineEdit(self)
         self._dest_edit.setPlaceholderText("Destination folder path")
         dest_layout.addWidget(self._dest_edit)
-        btn_dest = QPushButton("Browse...")
+        btn_dest = PushButton("Browse...", self)
         btn_dest.clicked.connect(self._browse_dest)
         dest_layout.addWidget(btn_dest)
-        form.addRow("Destination Folder:", dest_layout)
+        form.addRow(BodyLabel("Destination Folder:", self), dest_layout)
 
         # Enabled
-        self._enabled_check = QCheckBox("Enabled")
-        form.addRow("", self._enabled_check)
+        self._enabled_check = SwitchButton("Enabled", self)
+        self._enabled_check.setOnText("Enabled")
+        self._enabled_check.setOffText("Disabled")
+        form.addRow(BodyLabel("", self), self._enabled_check)
 
         # Auto monitor
-        self._auto_monitor_check = QCheckBox("Automatic Monitoring")
-        form.addRow("", self._auto_monitor_check)
+        self._auto_monitor_check = SwitchButton("Auto Monitor", self)
+        self._auto_monitor_check.setOnText("Yes")
+        self._auto_monitor_check.setOffText("No")
+        form.addRow(BodyLabel("Automatic Monitoring:", self), self._auto_monitor_check)
 
-        layout.addLayout(form)
-
-        # Buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._on_save)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.viewLayout.addLayout(form)
 
     def _populate(self):
         """Fill fields from the existing job."""
@@ -116,9 +121,9 @@ class JobDialog(QDialog):
         )
         if folder:
             self._dest_edit.setText(folder)
-
-    def _on_save(self):
-        """Validate and save the job."""
+            
+    def validate(self) -> bool:
+        """Validate and save the job. Called when yesButton is clicked."""
         self._job.name = self._name_edit.text().strip()
         self._job.source_folder = self._source_edit.text().strip()
         self._job.destination_folder = self._dest_edit.text().strip()
@@ -127,14 +132,15 @@ class JobDialog(QDialog):
 
         errors = self._job.validate()
         if errors:
-            QMessageBox.warning(
-                self,
+            msg = MessageBox(
                 "Validation Error",
                 "\n".join(errors),
+                self.window()
             )
-            return
+            msg.exec()
+            return False
 
-        self.accept()
+        return True
 
     @property
     def job(self) -> TransferJob:

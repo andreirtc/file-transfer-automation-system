@@ -1,37 +1,39 @@
 """
 Dashboard widget for the File Transfer Automation System.
-
-The central widget of the application that displays:
-- Current job information
-- Statistics cards with color-coded counts
-- Warning banners for important states
-- Transfer table with file status
-- Control buttons (Start/Stop Monitoring, Sync Now)
 """
 
 from __future__ import annotations
-
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
-    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
+)
+
+from qfluentwidgets import (
+    SimpleCardWidget,
+    CardWidget,
+    PrimaryPushButton,
+    PushButton,
+    FluentIcon,
+    InfoBar,
+    InfoBarPosition,
+    StrongBodyLabel,
+    BodyLabel,
+    TitleLabel,
+    SubtitleLabel
 )
 
 from core.models import FileStatus, TransferJob, TransferRecord
 from gui.transfer_table import TransferTableWidget
 
 
-class StatCard(QFrame):
+class StatCard(SimpleCardWidget):
     """A single statistics card showing a count and label."""
 
     def __init__(
@@ -41,36 +43,26 @@ class StatCard(QFrame):
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
-        self.setStyleSheet(
-            f"""
+        self.setStyleSheet(f"""
             StatCard {{
-                background-color: #FFFFFF;
-                border: 1px solid #E5E5E5;
                 border-left: 4px solid {color};
-                border-radius: 6px;
-                padding: 4px;
-                min-width: 90px;
             }}
-            """
-        )
+        """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(4)
 
-        self._count_label = QLabel("0")
+        self._count_label = TitleLabel("0", self)
         self._count_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        font = QFont("Segoe UI Variable Display")
-        font.setPointSize(20)
-        font.setBold(True)
-        self._count_label.setFont(font)
-        self._count_label.setStyleSheet("color: #1A1A1A; border: none;")
         layout.addWidget(self._count_label)
 
-        self._name_label = QLabel(label.upper())
+        self._name_label = BodyLabel(label.upper(), self)
         self._name_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self._name_label.setStyleSheet("color: #666666; font-size: 10px; font-weight: bold; letter-spacing: 1px; border: none;")
+        font = self._name_label.font()
+        font.setBold(True)
+        self._name_label.setFont(font)
+        self._name_label.setStyleSheet("color: #666666;")
         layout.addWidget(self._name_label)
 
     def set_count(self, count: int) -> None:
@@ -92,81 +84,62 @@ class DashboardWidget(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 24)
 
         # ── Job Info Panel ──
-        self._job_group = QGroupBox("Current Transfer Job")
-        job_layout = QGridLayout()
+        self._job_group = SimpleCardWidget(self)
+        job_layout = QGridLayout(self._job_group)
+        job_layout.setContentsMargins(16, 16, 16, 16)
+        job_layout.setVerticalSpacing(8)
 
-        self._job_name_label = QLabel("No job configured")
-        self._job_name_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-        job_layout.addWidget(QLabel("Job:"), 0, 0)
+        job_layout.addWidget(StrongBodyLabel("Job:", self._job_group), 0, 0)
+        self._job_name_label = BodyLabel("No job configured", self._job_group)
         job_layout.addWidget(self._job_name_label, 0, 1)
 
-        self._source_label = QLabel("—")
-        job_layout.addWidget(QLabel("Source:"), 1, 0)
+        job_layout.addWidget(StrongBodyLabel("Source:", self._job_group), 1, 0)
+        self._source_label = BodyLabel("—", self._job_group)
         job_layout.addWidget(self._source_label, 1, 1)
 
-        self._dest_label = QLabel("—")
-        job_layout.addWidget(QLabel("Destination:"), 2, 0)
+        job_layout.addWidget(StrongBodyLabel("Destination:", self._job_group), 2, 0)
+        self._dest_label = BodyLabel("—", self._job_group)
         job_layout.addWidget(self._dest_label, 2, 1)
 
-        self._monitor_status_label = QLabel("OFF")
-        self._monitor_status_label.setStyleSheet(
-            "font-weight: bold; color: #EF5350;"
-        )
-        job_layout.addWidget(QLabel("Monitoring:"), 3, 0)
+        job_layout.addWidget(StrongBodyLabel("Monitoring:", self._job_group), 3, 0)
+        self._monitor_status_label = BodyLabel("OFF", self._job_group)
+        self._monitor_status_label.setStyleSheet("color: #C42B1C; font-weight: bold;")
         job_layout.addWidget(self._monitor_status_label, 3, 1)
 
-        self._job_group.setLayout(job_layout)
         layout.addWidget(self._job_group)
 
         # ── Statistics Cards ──
         stats_layout = QHBoxLayout()
-        stats_layout.setSpacing(6)
+        stats_layout.setSpacing(12)
 
         self._stat_cards: dict[str, StatCard] = {}
         card_configs = [
-            ("DETECTED", "Detected", "#42A5F5"),
-            ("PROCESSING", "Processing", "#FFA726"),
-            ("READY", "Ready", "#66BB6A"),
-            ("QUEUED", "Queued", "#29B6F6"),
-            ("TRANSFERRING", "Transferring", "#26C6DA"),
-            ("COMPLETED", "Completed", "#2E7D32"),
-            ("FAILED", "Failed", "#E53935"),
-            ("SKIPPED", "Skipped", "#757575"),
+            ("DETECTED", "Detected", "#0078D4"),
+            ("PROCESSING", "Processing", "#D83B01"),
+            ("READY", "Ready", "#107C10"),
+            ("QUEUED", "Queued", "#005FB8"),
+            ("TRANSFERRING", "Transferring", "#00B7C3"),
+            ("COMPLETED", "Completed", "#107C10"),
+            ("FAILED", "Failed", "#C42B1C"),
+            ("SKIPPED", "Skipped", "#797775"),
         ]
 
         for key, label, color in card_configs:
-            card = StatCard(label, color)
+            card = StatCard(label, color, self)
             self._stat_cards[key] = card
             stats_layout.addWidget(card)
 
         layout.addLayout(stats_layout)
 
-        # ── Warning Banner ──
-        self._warning_frame = QFrame()
-        self._warning_frame.setStyleSheet(
-            """
-            QFrame {
-                background-color: #FFF3E0;
-                border: 1px solid #FFB74D;
-                border-radius: 4px;
-                padding: 8px;
-            }
-            """
-        )
-        warning_layout = QHBoxLayout(self._warning_frame)
-        warning_layout.setContentsMargins(8, 4, 8, 4)
-        self._warning_icon = QLabel("⚠")
-        self._warning_icon.setStyleSheet("font-size: 16px; color: #E65100;")
-        warning_layout.addWidget(self._warning_icon)
-        self._warning_text = QLabel("")
-        self._warning_text.setStyleSheet("color: #E65100;")
-        warning_layout.addWidget(self._warning_text)
-        warning_layout.addStretch()
-        self._warning_frame.setVisible(False)
-        layout.addWidget(self._warning_frame)
+        # ── Warning Banner Container ──
+        self._warning_layout = QVBoxLayout()
+        self._warning_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(self._warning_layout)
+        self._current_info_bar = None
 
         # ── Transfer Table ──
         self._transfer_table = TransferTableWidget(self)
@@ -174,25 +147,20 @@ class DashboardWidget(QWidget):
 
         # ── Control Buttons ──
         controls = QHBoxLayout()
+        controls.setSpacing(12)
 
-        self._btn_start = QPushButton("▶  Start Monitoring")
-        self._btn_start.setObjectName("startButton")
-        self._btn_start.setMinimumHeight(36)
+        self._btn_start = PushButton(FluentIcon.PLAY, "Start Monitoring", self)
         self._btn_start.clicked.connect(self.start_monitoring_requested)
         controls.addWidget(self._btn_start)
 
-        self._btn_stop = QPushButton("■  Stop Monitoring")
-        self._btn_stop.setObjectName("stopButton")
-        self._btn_stop.setMinimumHeight(36)
+        self._btn_stop = PushButton(FluentIcon.PAUSE, "Stop Monitoring", self)
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self.stop_monitoring_requested)
         controls.addWidget(self._btn_stop)
 
         controls.addStretch()
 
-        self._btn_sync = QPushButton("🔄  SYNC NOW")
-        self._btn_sync.setObjectName("primaryButton")
-        self._btn_sync.setMinimumHeight(36)
+        self._btn_sync = PrimaryPushButton(FluentIcon.SYNC, "SYNC NOW", self)
         self._btn_sync.clicked.connect(self.sync_now_requested)
         controls.addWidget(self._btn_sync)
 
@@ -215,18 +183,19 @@ class DashboardWidget(QWidget):
         """Update the monitoring status indicator and button states."""
         if is_monitoring:
             self._monitor_status_label.setText("ON — MONITORING")
-            self._monitor_status_label.setStyleSheet(
-                "font-weight: bold; color: #2E7D32;"
-            )
+            self._monitor_status_label.setStyleSheet("color: #107C10; font-weight: bold;")
             self._btn_start.setEnabled(False)
             self._btn_stop.setEnabled(True)
         else:
             self._monitor_status_label.setText("OFF")
-            self._monitor_status_label.setStyleSheet(
-                "font-weight: bold; color: #EF5350;"
-            )
+            self._monitor_status_label.setStyleSheet("color: #C42B1C; font-weight: bold;")
             self._btn_start.setEnabled(True)
             self._btn_stop.setEnabled(False)
+
+    def _clear_info_bar(self):
+        if self._current_info_bar:
+            self._current_info_bar.deleteLater()
+            self._current_info_bar = None
 
     def update_statistics(self, stats: dict[str, int]) -> None:
         """Update the statistics cards."""
@@ -238,60 +207,41 @@ class DashboardWidget(QWidget):
         failed = stats.get("FAILED", 0)
         completed = stats.get("COMPLETED", 0)
 
+        self._clear_info_bar()
+
         if failed > 0:
-            self._warning_frame.setVisible(True)
-            self._warning_frame.setStyleSheet(
-                """
-                QFrame {
-                    background-color: #FFEBEE;
-                    border: 1px solid #EF5350;
-                    border-radius: 4px;
-                    padding: 8px;
-                }
-                """
+            self._current_info_bar = InfoBar.error(
+                title="Errors Detected",
+                content=f"{failed} transfer(s) failed.",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=False,
+                position=InfoBarPosition.NONE,
+                duration=-1,
+                parent=self
             )
-            self._warning_icon.setText("❌")
-            self._warning_icon.setStyleSheet("font-size: 16px; color: #C62828;")
-            self._warning_text.setText(f"{failed} transfer(s) failed")
-            self._warning_text.setStyleSheet("color: #C62828;")
+            self._warning_layout.addWidget(self._current_info_bar)
         elif processing > 0:
-            self._warning_frame.setVisible(True)
-            self._warning_frame.setStyleSheet(
-                """
-                QFrame {
-                    background-color: #FFF3E0;
-                    border: 1px solid #FFB74D;
-                    border-radius: 4px;
-                    padding: 8px;
-                }
-                """
+            self._current_info_bar = InfoBar.warning(
+                title="Processing",
+                content=f"{processing} file(s) still being processed.",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=False,
+                position=InfoBarPosition.NONE,
+                duration=-1,
+                parent=self
             )
-            self._warning_icon.setText("⚠")
-            self._warning_icon.setStyleSheet("font-size: 16px; color: #E65100;")
-            self._warning_text.setText(
-                f"{processing} file(s) still being processed"
-            )
-            self._warning_text.setStyleSheet("color: #E65100;")
+            self._warning_layout.addWidget(self._current_info_bar)
         elif completed > 0:
-            self._warning_frame.setVisible(True)
-            self._warning_frame.setStyleSheet(
-                """
-                QFrame {
-                    background-color: #E8F5E9;
-                    border: 1px solid #66BB6A;
-                    border-radius: 4px;
-                    padding: 8px;
-                }
-                """
+            self._current_info_bar = InfoBar.success(
+                title="Transfers Complete",
+                content=f"{completed} file(s) successfully transferred.",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=False,
+                position=InfoBarPosition.NONE,
+                duration=-1,
+                parent=self
             )
-            self._warning_icon.setText("✓")
-            self._warning_icon.setStyleSheet("font-size: 16px; color: #2E7D32;")
-            self._warning_text.setText(
-                f"{completed} file(s) successfully transferred"
-            )
-            self._warning_text.setStyleSheet("color: #2E7D32;")
-        else:
-            self._warning_frame.setVisible(False)
+            self._warning_layout.addWidget(self._current_info_bar)
 
     def update_record(self, record: TransferRecord) -> None:
         """Update a single record in the transfer table."""

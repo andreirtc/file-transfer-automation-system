@@ -19,14 +19,14 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QTableView,
     QVBoxLayout,
     QWidget,
 )
+
+from qfluentwidgets import TableView, ComboBox, BodyLabel
 
 from core.models import FileStatus, TransferRecord, format_file_size
 
@@ -175,12 +175,12 @@ class TransferTableWidget(QWidget):
 
         # Filter bar
         filter_layout = QHBoxLayout()
-        filter_layout.addWidget(QLabel("Filter by status:"))
+        filter_layout.addWidget(BodyLabel("Filter by status:"))
 
-        self._filter_combo = QComboBox()
-        self._filter_combo.addItem("All Statuses", "")
+        self._filter_combo = ComboBox()
+        self._filter_combo.addItem("All Statuses", userData="")
         for status in FileStatus:
-            self._filter_combo.addItem(status.value, status.value)
+            self._filter_combo.addItem(status.value, userData=status.value)
         self._filter_combo.currentIndexChanged.connect(self._on_filter_changed)
         filter_layout.addWidget(self._filter_combo)
         filter_layout.addStretch()
@@ -188,10 +188,11 @@ class TransferTableWidget(QWidget):
         layout.addLayout(filter_layout)
 
         # Table view
-        self._table = QTableView()
+        self._table = TableView()
         self._table.setModel(self._proxy)
-        self._table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self._table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        from PySide6.QtWidgets import QAbstractItemView
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setAlternatingRowColors(True)
         self._table.setSortingEnabled(True)
         self._table.verticalHeader().setVisible(False)
