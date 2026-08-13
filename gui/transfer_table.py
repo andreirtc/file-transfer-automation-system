@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QVBoxLayout,
     QWidget,
+    QMenu,
 )
 
 from qfluentwidgets import TableView, ComboBox, BodyLabel
@@ -42,6 +43,7 @@ _STATUS_COLORS: dict[FileStatus, str] = {
     FileStatus.FAILED: "#C42B1C",       # Deep Red
     FileStatus.SKIPPED: "#797775",      # Gray
     FileStatus.CONFLICT: "#D83B01",     # Deep Orange
+    FileStatus.WAITING_FOR_WINDOW: "#CA5010", # Dark Orange
 }
 
 _COLUMNS = [
@@ -113,7 +115,7 @@ class TransferTableModel(QAbstractTableModel):
             return self._display_data(record, col)
         elif role == Qt.ItemDataRole.ForegroundRole:
             if col == 1:  # Status column
-                color = _STATUS_COLORS.get(record.status, "#FFFFFF")
+                color = _STATUS_COLORS.get(record.status, "#000000")
                 return QBrush(QColor(color))
         elif role == Qt.ItemDataRole.ToolTipRole:
             if col == 7 and record.error_message:  # Error column
@@ -159,6 +161,7 @@ class TransferTableWidget(QWidget):
     """
 
     row_selected = Signal(int)  # row index
+    force_start_requested = Signal(str) # record id
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -196,6 +199,8 @@ class TransferTableWidget(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.setSortingEnabled(True)
         self._table.verticalHeader().setVisible(False)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_context_menu)
 
         # Column widths
         header = self._table.horizontalHeader()
@@ -230,3 +235,19 @@ class TransferTableWidget(QWidget):
             self._proxy.setFilterFixedString(filter_text)
         else:
             self._proxy.setFilterFixedString("")
+
+    def _on_context_menu(self, pos) -> None:
+        idx = self._table.indexAt(pos)
+        if not idx.isValid():
+            return
+            
+        source_idx = self._proxy.mapToSource(idx)
+        record = self._model.get_record(source_idx.row())
+        
+        if record and record.status == FileStatus.WAITING_FOR_WINDOW:
+            menu = QMenu(self)
+            force_action = menu.addAction("Force Start Transfer")
+            action = menu.exec(self._table.viewport().mapToGlobal(pos))
+            if action == force_action:
+                self.force_start_requested.emit(record.id)
+

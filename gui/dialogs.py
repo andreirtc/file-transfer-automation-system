@@ -34,7 +34,8 @@ from qfluentwidgets import (
     ComboBox,
     TableWidget,
     PlainTextEdit,
-    SimpleCardWidget
+    SimpleCardWidget,
+    SwitchButton
 )
 
 from core.models import ConflictResolution, FileStatus, SyncAction, TransferRecord
@@ -316,6 +317,20 @@ class SettingsDialog(MessageBoxBase):
                 break
         form.addRow(BodyLabel("Overwrite policy:", self), self._overwrite_policy)
 
+        # Network Drive Mode
+        self._network_mode = SwitchButton("Network Drive Mode", self)
+        self._network_mode.setOnText("Enabled (Fast Polling)")
+        self._network_mode.setOffText("Disabled")
+        self._network_mode.setChecked(config.network_drive_mode)
+        form.addRow(BodyLabel("Shared Network:", self), self._network_mode)
+
+        # Auto Cleanup
+        self._auto_cleanup = SwitchButton("Auto Cleanup", self)
+        self._auto_cleanup.setOnText("Enabled (Delete 7+ days old on Mondays)")
+        self._auto_cleanup.setOffText("Disabled")
+        self._auto_cleanup.setChecked(config.auto_cleanup_enabled)
+        form.addRow(BodyLabel("Source Cleanup:", self), self._auto_cleanup)
+
         self.viewLayout.addLayout(form)
 
     def validate(self) -> bool:
@@ -325,6 +340,8 @@ class SettingsDialog(MessageBoxBase):
         self._config.set("retry_delay", self._retry_delay.value())
         self._config.set("reconciliation_interval", self._recon_interval.value())
         self._config.set("overwrite_policy", self._overwrite_policy.currentData())
+        self._config.set("network_drive_mode", self._network_mode.isChecked())
+        self._config.set("auto_cleanup_enabled", self._auto_cleanup.isChecked())
         self._config.save()
         return True
 

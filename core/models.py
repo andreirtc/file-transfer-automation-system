@@ -34,6 +34,7 @@ class FileStatus(enum.Enum):
     """
     DETECTED = "DETECTED"
     PROCESSING = "PROCESSING"
+    WAITING_FOR_WINDOW = "WAITING_FOR_WINDOW"
     READY = "READY"
     QUEUED = "QUEUED"
     TRANSFERRING = "TRANSFERRING"
@@ -56,6 +57,7 @@ class FileStatus(enum.Enum):
         return self in (
             FileStatus.DETECTED,
             FileStatus.PROCESSING,
+            FileStatus.WAITING_FOR_WINDOW,
             FileStatus.READY,
             FileStatus.QUEUED,
             FileStatus.TRANSFERRING,
@@ -87,6 +89,7 @@ class TransferRecord:
     error_message: Optional[str] = None
     retry_count: int = 0
     verification_passed: Optional[bool] = None
+    override_window: bool = False
 
     def __post_init__(self):
         if self.detected_at is None:
@@ -120,6 +123,9 @@ class TransferJob:
     destination_folder: str = ""
     enabled: bool = True
     auto_monitor: bool = True
+    schedule_mode: str = "continuous"  # "continuous" or "window"
+    window_start: str = "23:00"
+    window_end: str = "06:00"
     created_at: Optional[datetime] = None
 
     def __post_init__(self):

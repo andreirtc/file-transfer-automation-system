@@ -157,6 +157,8 @@ class MainWindow(MSFluentWindow):
         self._dashboard.start_monitoring_requested.connect(self._on_start_monitoring)
         self._dashboard.stop_monitoring_requested.connect(self._on_stop_monitoring)
         self._dashboard.sync_now_requested.connect(self._on_sync_now)
+        self._dashboard.force_start_requested.connect(self._manager.force_start)
+        self._dashboard.job_switched.connect(self._on_job_switched)
 
         # Manager → dashboard
         self._manager.file_detected.connect(self._on_file_detected)
@@ -176,6 +178,7 @@ class MainWindow(MSFluentWindow):
         jobs = self._db.get_jobs()
         if jobs:
             job = jobs[0]
+            self._dashboard.update_job_list(jobs, job.id)
             self._manager.set_job(job)
             self._dashboard.update_job_info(job)
 
@@ -200,6 +203,10 @@ class MainWindow(MSFluentWindow):
         if dialog.exec() == JobDialog.DialogCode.Accepted:
             job = dialog.job
             self._db.save_job(job)
+            
+            jobs = self._db.get_jobs()
+            self._dashboard.update_job_list(jobs, job.id)
+            
             self._manager.set_job(job)
             self._dashboard.update_job_info(job)
             self._dashboard.set_records([])
@@ -221,12 +228,41 @@ class MainWindow(MSFluentWindow):
         if dialog.exec() == JobDialog.DialogCode.Accepted:
             updated_job = dialog.job
             self._db.save_job(updated_job)
+            
+            jobs = self._db.get_jobs()
+            self._dashboard.update_job_list(jobs, updated_job.id)
+            
             self._manager.set_job(updated_job)
             self._dashboard.update_job_info(updated_job)
             logger.info("Updated job: '%s'", updated_job.name)
 
             if was_monitoring:
                 self._on_start_monitoring()
+
+    def _on_job_switched(self, job_id: str):
+        """Handle when the user selects a different job from the dropdown."""
+        jobs = self._db.get_jobs()
+        job = next((j for j in jobs if j.id == job_id), None)
+        if not job:
+            return
+            
+        was_monitoring = self._manager.is_monitoring
+        if was_monitoring:
+            self._manager.stop_monitoring()
+            
+        self._manager.set_job(job)
+        self._dashboard.update_job_info(job)
+        
+        # Load active records for the new job
+        records = self._manager.get_all_records()
+        self._dashboard.set_records(records)
+        
+        self._on_log_message("INFO", f"Switched to job: {job.name}")
+        
+        # Auto-start monitoring if configured
+        if job.auto_monitor and self._config.automatic_monitoring:
+            QTimer.singleShot(500, self._on_start_monitoring)
+
 
     def _on_start_monitoring(self):
         if not self._manager.current_job:

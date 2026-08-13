@@ -10,7 +10,7 @@ Run this script from the project root:
     python demo/create_test_files.py
 
 Or with the venv:
-    .venv\Scripts\python.exe demo/create_test_files.py
+    .venv\\Scripts\\python.exe demo/create_test_files.py
 """
 
 import os
@@ -18,11 +18,20 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+
 # Project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEMO_DIR = PROJECT_ROOT / "demo"
-SOURCE_DIR = DEMO_DIR / "source"
+DEFAULT_SOURCE_DIR = DEMO_DIR / "source"
 DEST_DIR = DEMO_DIR / "destination"
+
+# Active source dir (can be overridden)
+SOURCE_DIR = DEFAULT_SOURCE_DIR
 
 
 def setup_demo_dirs():
@@ -106,6 +115,71 @@ def simulate_growing_file():
     print(f"  The system should now transition: PROCESSING → READY → TRANSFERRING")
     print()
 
+def simulate_locked_file():
+    """
+    Test 5 — Simulate an OS-level exclusive file lock.
+    Uses msvcrt to lock the file for 15 seconds.
+    """
+    if msvcrt is None:
+        print("This test requires Windows (msvcrt module). Skipping.")
+        return
+        
+    file_path = SOURCE_DIR / "locked_file.dat"
+    print(f"Simulating OS-locked file: {file_path.name}")
+    print("  Creating file and placing exclusive lock...")
+    
+    with open(file_path, "wb") as f:
+        # Lock the file exclusively
+        # msvcrt.LK_NBLCK = 2 (Non-blocking lock)
+        # We'll just use a blocking lock since we own it, or lock the first byte
+        f.write(b"Initial data for locked file.")
+        f.flush()
+        
+        # Lock 100 bytes starting at position 0 using a blocking lock
+        f.seek(0)
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 100)
+        except PermissionError as e:
+            print(f"  ⚠️ Unable to acquire lock: {e}")
+            return
+        
+        print("  ✓ File locked! It should appear as PROCESSING in the app.")
+        print("  Holding lock for 15 seconds...")
+        for i in range(15, 0, -1):
+            print(f"  Releasing in {i}s...", end="\r")
+            time.sleep(1)
+        
+        print("  Releasing lock now...      ")
+        # Unlock the bytes before closing the file
+        f.seek(0)
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 100)
+        except PermissionError as e:
+            print(f"  ⚠️ Unable to release lock: {e}")
+        
+        print(f"✓ Lock released: {file_path.name}")
+        print("  The system should now process the file normally.")
+        print()
+
+def print_demo_instructions():
+    """Print instructions for demoing the new features."""
+    print("=" * 60)
+    print("  DEMO INSTRUCTIONS")
+    print("=" * 60)
+    print("1. Transfer Windows (Scheduling)")
+    print("   - Edit a job and check 'Transfer during specific time window'")
+    print("   - Set the window to start LATER than the current time")
+    print("   - Add a file. It should enter 'WAITING_FOR_WINDOW'")
+    print("   - You can right-click the file in the table to 'Force Start'")
+    print()
+    print("2. Timestamped Folders & Multi-Job")
+    print("   - Notice the dropdown in the Dashboard to switch jobs")
+    print("   - After a transfer, check the Destination folder to see")
+    print("     the timestamped subfolders.")
+    print("=" * 60)
+    print()
+
+
 
 def clean_demo():
     """Remove all files from demo directories."""
@@ -129,16 +203,22 @@ def print_menu():
     print("  2. Create a small test file (instant ready)")
     print("  3. Create multiple test files")
     print("  4. Simulate a slowly-growing file (takes ~20s)")
-    print("  5. Clean demo directories")
-    print("  6. Full demo (setup + small files + growing file)")
+    print("  5. Simulate an OS-locked file (tests PermissionError fix, 15s)")
+    print("  6. Clean demo directories")
+    print("  7. Full demo (setup + small + growing + locked)")
+    print("  8. Show instructions for new features")
+    print("  9. Change Target Source Directory (For Network Testing)")
     print("  0. Exit")
+    print()
+    print(f"  Current Target Source: {SOURCE_DIR}")
     print()
 
 
 def main():
+    global SOURCE_DIR
     while True:
         print_menu()
-        choice = input("Enter choice [0-6]: ").strip()
+        choice = input("Enter choice [0-9]: ").strip()
 
         if choice == "0":
             print("Goodbye!")
@@ -155,16 +235,29 @@ def main():
             setup_demo_dirs()
             simulate_growing_file()
         elif choice == "5":
-            clean_demo()
+            setup_demo_dirs()
+            simulate_locked_file()
         elif choice == "6":
+            clean_demo()
+        elif choice == "7":
             setup_demo_dirs()
             create_small_file()
             create_multiple_files()
             print("Now starting the slowly-growing file simulation...")
-            print("(You can start the application while this runs)\n")
             simulate_growing_file()
+            print("Now starting the exclusively locked file simulation...")
+            simulate_locked_file()
+        elif choice == "8":
+            print_demo_instructions()
+        elif choice == "9":
+            new_dir = input(r"Enter new path (e.g., \\LAPTOP\Share) or press enter for default: ").strip()
+            if new_dir:
+                SOURCE_DIR = Path(new_dir)
+            else:
+                SOURCE_DIR = DEFAULT_SOURCE_DIR
+            print(f"Target Source Directory updated to: {SOURCE_DIR}")
         else:
-            print("Invalid choice. Please enter 0-6.\n")
+            print("Invalid choice. Please enter 0-9.\n")
 
         input("\nPress Enter to continue...")
         print()

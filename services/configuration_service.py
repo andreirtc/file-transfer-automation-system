@@ -28,7 +28,9 @@ _DEFAULTS: dict[str, Any] = {
     "temp_file_prefix": ".",             # prefix for temp copy files
     "temp_file_suffix": ".transfer_tmp", # suffix for temp copy files
     "log_max_bytes": 5_242_880,          # 5 MB per log file
-    "log_backup_count": 3,              # number of rotated log backups
+    "log_backup_count": 3,               # number of rotated log backups
+    "network_drive_mode": False,         # optimize for shared network drives
+    "auto_cleanup_enabled": False,       # enable automatic deletion of source files
 }
 
 
@@ -163,6 +165,14 @@ class ConfigurationService:
     @property
     def temp_file_suffix(self) -> str:
         return self.get_str("temp_file_suffix", ".transfer_tmp")
+
+    @property
+    def network_drive_mode(self) -> bool:
+        return self.get_bool("network_drive_mode", False)
+
+    @property
+    def auto_cleanup_enabled(self) -> bool:
+        return self.get_bool("auto_cleanup_enabled", False)
 
     @property
     def all_settings(self) -> dict[str, Any]:

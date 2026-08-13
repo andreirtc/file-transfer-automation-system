@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Optional
 
@@ -141,10 +141,20 @@ class TransferManager(QObject):
         self._safety_timer = QTimer(self)
         self._safety_timer.timeout.connect(self._run_safety_checks)
 
+        # Window check timer - checks if waiting files can be queued
+        self._window_timer = QTimer(self)
+        self._window_timer.timeout.connect(self._check_windows)
+        self._window_timer.setInterval(60000) # 1 minute
+
         # Retry timer
         self._retry_timer = QTimer(self)
         self._retry_timer.timeout.connect(self._process_retries)
         self._retry_timer.setInterval(self._config.retry_delay * 1000)
+
+        # Cleanup timer (runs every hour)
+        self._cleanup_timer = QTimer(self)
+        self._cleanup_timer.timeout.connect(self._run_auto_cleanup)
+        self._cleanup_timer.setInterval(3600 * 1000)  # 1 hour
 
     # ──────────────────────────────────────────────
     # Job management
@@ -213,10 +223,15 @@ class TransferManager(QObject):
                 self.log_message.emit("error", f"Cannot create source folder: {e}")
                 return
 
+        recon_interval = self._config.reconciliation_interval
+        if self._config.network_drive_mode:
+            recon_interval = min(recon_interval, 10)  # fast polling for networks
+            logger.info("Network Drive Mode enabled: forcing fast reconciliation (every %ss)", recon_interval)
+
         self._monitor = FileMonitor(
             source_folder=job.source_folder,
             on_file_detected=self._on_file_detected,
-            reconciliation_interval=self._config.reconciliation_interval,
+            reconciliation_interval=recon_interval,
             temp_suffix=self._config.temp_file_suffix,
         )
         self._monitor.start()
@@ -225,6 +240,7 @@ class TransferManager(QObject):
         interval_ms = self._config.stability_check_interval * 1000
         self._safety_timer.start(interval_ms)
         self._retry_timer.start()
+        self._window_timer.start()
 
         # Initial scan to pick up existing files
         self._monitor.update_known_files()
@@ -236,6 +252,10 @@ class TransferManager(QObject):
         logger.info("Monitoring started for '%s'", job.name)
         self.log_message.emit("info", "Monitoring started")
 
+        if self._config.auto_cleanup_enabled:
+            self._cleanup_timer.start()
+            self._run_auto_cleanup()  # Run immediately on start
+
     def stop_monitoring(self) -> None:
         """Stop monitoring."""
         if self._monitor:
@@ -244,6 +264,8 @@ class TransferManager(QObject):
 
         self._safety_timer.stop()
         self._retry_timer.stop()
+        self._cleanup_timer.stop()
+        self._window_timer.stop()
 
         self.monitoring_changed.emit(False)
         logger.info("Monitoring stopped")
@@ -283,30 +305,41 @@ class TransferManager(QObject):
                 return
 
         # Check if this file was already successfully transferred
+        file_size = 0
+        source_modified = 0.0
+        initial_status = FileStatus.DETECTED
+        
         try:
             stat = Path(source_path).stat()
+            file_size = stat.st_size
+            source_modified = stat.st_mtime
             prev = self._db.check_already_transferred(
-                job.id, source_path, stat.st_size, stat.st_mtime
+                job.id, source_path, file_size, source_modified
             )
             if prev:
                 logger.info("Already transferred: %s", Path(source_path).name)
                 return
         except OSError as e:
-            logger.warning("Cannot stat file %s: %s", source_path, e)
-            return
+            logger.warning("Cannot stat file %s (likely locked by Windows): %s", source_path, e)
+            # Proceed anyway so UI shows the file in processing state,
+            # wait for it to be accessible via safety checks.
+            initial_status = FileStatus.PROCESSING
 
         # Create a new transfer record
         file_path_obj = Path(source_path)
-        dest_path = str(Path(job.destination_folder) / file_path_obj.name)
+        
+        # Use Timestamped folder structure: Destination/YYYY-MM-DD_HHMMSS/filename.ext
+        timestamp_folder = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        dest_path = str(Path(job.destination_folder) / timestamp_folder / file_path_obj.name)
 
         record = TransferRecord(
             job_id=job.id,
             file_name=file_path_obj.name,
             source_path=source_path,
             destination_path=dest_path,
-            file_size=stat.st_size,
-            source_modified=stat.st_mtime,
-            status=FileStatus.DETECTED,
+            file_size=file_size,
+            source_modified=source_modified,
+            status=initial_status,
         )
 
         self._active_records[source_path] = record
@@ -318,8 +351,9 @@ class TransferManager(QObject):
         transfer_logger.info("File detected: %s (%s)", record.file_name, record.display_size)
         self.log_message.emit("info", f"File detected: {record.file_name}")
 
-        # Immediately run a safety check
-        self._check_file_safety(record)
+        # Immediately run a safety check if it's not locked, otherwise wait
+        if initial_status != FileStatus.PROCESSING:
+            self._check_file_safety(record)
 
     # ──────────────────────────────────────────────
     # Safety checks
@@ -342,12 +376,18 @@ class TransferManager(QObject):
         record.status = status
 
         if status == FileStatus.READY:
-            transfer_logger.info("File ready: %s", record.file_name)
-            self.log_message.emit("info", f"File ready: {record.file_name}")
+            # Check transfer window logic
+            if not self._is_in_transfer_window(record) and not record.override_window:
+                record.status = FileStatus.WAITING_FOR_WINDOW
+                transfer_logger.info("File waiting for window: %s", record.file_name)
+                self.log_message.emit("info", f"Waiting for window: {record.file_name}")
+            else:
+                transfer_logger.info("File ready: %s", record.file_name)
+                self.log_message.emit("info", f"File ready: {record.file_name}")
 
-            # Auto-transfer if monitoring is active
-            if self.is_monitoring and self._current_job and self._current_job.auto_monitor:
-                self._queue_file(record)
+                # Auto-transfer if monitoring is active
+                if self.is_monitoring and self._current_job and self._current_job.auto_monitor:
+                    self._queue_file(record)
 
         elif status == FileStatus.PROCESSING:
             if old_status == FileStatus.DETECTED:
@@ -553,7 +593,7 @@ class TransferManager(QObject):
         for record in self._active_records.values():
             if record.status == FileStatus.READY:
                 ready.append(record)
-            elif record.status in (FileStatus.DETECTED, FileStatus.PROCESSING):
+            elif record.status in (FileStatus.DETECTED, FileStatus.PROCESSING, FileStatus.WAITING_FOR_WINDOW):
                 processing.append(record)
 
         return ready, processing
@@ -593,6 +633,20 @@ class TransferManager(QObject):
 
         self._emit_stats()
 
+    def force_start(self, record_id: str) -> None:
+        """Manually override transfer window and start immediately."""
+        record = self._find_record_by_id(record_id)
+        if not record:
+            return
+            
+        record.override_window = True
+        if record.status == FileStatus.WAITING_FOR_WINDOW:
+            record.status = FileStatus.READY
+            self._db.save_record(record)
+            self.file_status_changed.emit(record_id, record.status)
+            self._queue_file(record)
+            self._emit_stats()
+
     # ──────────────────────────────────────────────
     # Utilities
     # ──────────────────────────────────────────────
@@ -630,3 +684,88 @@ class TransferManager(QObject):
             self._worker.cancel()
             self._worker.wait(5000)
         logger.info("Transfer manager shut down")
+
+    # ──────────────────────────────────────────────
+    # Auto-Cleanup
+    # ──────────────────────────────────────────────
+
+    def _run_auto_cleanup(self) -> None:
+        """Runs the auto-cleanup job to delete old transferred source files on Mondays."""
+        if not self._config.auto_cleanup_enabled or not self._current_job:
+            return
+
+        # Check if it's Monday (0 = Monday, 6 = Sunday)
+        if datetime.now().weekday() != 0:
+            return
+
+        logger.info("Running Monday auto-cleanup...")
+        self.log_message.emit("info", "Starting weekly source cleanup...")
+
+        # Find candidates older than 7 days
+        candidates = self._db.get_cleanup_candidates(self._current_job.id, days=7)
+        deleted_count = 0
+
+        for record in candidates:
+            source_path = Path(record.source_path)
+            dest_path = Path(record.destination_path)
+
+            if not source_path.exists():
+                continue
+
+            # Ensure it actually exists at the destination before deleting the source
+            if dest_path.exists() and dest_path.stat().st_size == record.file_size:
+                try:
+                    source_path.unlink()
+                    deleted_count += 1
+                    logger.info("Auto-cleanup deleted source file: %s", source_path)
+                except OSError as e:
+                    logger.error("Failed to delete source file during cleanup %s: %s", source_path, e)
+
+        if deleted_count > 0:
+            self.log_message.emit("info", f"Auto-cleanup removed {deleted_count} old file(s).")
+
+    # ──────────────────────────────────────────────
+    # Windows & Scheduling
+    # ──────────────────────────────────────────────
+    def _is_in_transfer_window(self, record: TransferRecord) -> bool:
+        """Check if current time is within the allowed transfer window."""
+        if not self._current_job or self._current_job.schedule_mode != "window":
+            return True
+            
+        try:
+            now = datetime.now().time()
+            start_time = datetime.strptime(self._current_job.window_start, "%H:%M").time()
+            end_time = datetime.strptime(self._current_job.window_end, "%H:%M").time()
+            
+            if start_time <= end_time:
+                return start_time <= now <= end_time
+            else:
+                # Crosses midnight
+                return now >= start_time or now <= end_time
+        except ValueError:
+            return True # Fallback if time format is wrong
+            
+    def _check_windows(self) -> None:
+        """Transition WAITING_FOR_WINDOW files to READY if window opened."""
+        if not self._current_job:
+            return
+            
+        now_in_window = self._is_in_transfer_window(None) # record argument not used for job config
+        if not now_in_window:
+            return
+            
+        queued_count = 0
+        for record in list(self._active_records.values()):
+            if record.status == FileStatus.WAITING_FOR_WINDOW:
+                record.status = FileStatus.READY
+                self._db.save_record(record)
+                self.file_status_changed.emit(record.id, record.status)
+                
+                if self.is_monitoring and self._current_job.auto_monitor:
+                    self._queue_file(record)
+                    queued_count += 1
+                    
+        if queued_count > 0:
+            self._emit_stats()
+
+

@@ -69,6 +69,9 @@ class DatabaseService:
                     destination_folder TEXT NOT NULL,
                     enabled       INTEGER NOT NULL DEFAULT 1,
                     auto_monitor  INTEGER NOT NULL DEFAULT 1,
+                    schedule_mode TEXT NOT NULL DEFAULT 'continuous',
+                    window_start  TEXT NOT NULL DEFAULT '23:00',
+                    window_end    TEXT NOT NULL DEFAULT '06:00',
                     created_at    TEXT
                 );
 
@@ -89,6 +92,7 @@ class DatabaseService:
                     error_message     TEXT,
                     retry_count       INTEGER NOT NULL DEFAULT 0,
                     verification_passed INTEGER,
+                    override_window   INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY (job_id) REFERENCES transfer_jobs(id)
                 );
 
@@ -101,6 +105,20 @@ class DatabaseService:
                 """
             )
             conn.commit()
+            
+            # Simple migration for existing tables
+            try:
+                conn.execute("ALTER TABLE transfer_jobs ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'continuous'")
+                conn.execute("ALTER TABLE transfer_jobs ADD COLUMN window_start TEXT NOT NULL DEFAULT '23:00'")
+                conn.execute("ALTER TABLE transfer_jobs ADD COLUMN window_end TEXT NOT NULL DEFAULT '06:00'")
+            except sqlite3.OperationalError:
+                pass  # Columns likely already exist
+                
+            try:
+                conn.execute("ALTER TABLE transfer_records ADD COLUMN override_window INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
             logger.info("Database schema initialized at %s", self._db_path)
         finally:
             conn.close()
@@ -130,8 +148,8 @@ class DatabaseService:
                 """
                 INSERT OR REPLACE INTO transfer_jobs
                     (id, name, source_folder, destination_folder,
-                     enabled, auto_monitor, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     enabled, auto_monitor, schedule_mode, window_start, window_end, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.id,
@@ -140,6 +158,9 @@ class DatabaseService:
                     job.destination_folder,
                     int(job.enabled),
                     int(job.auto_monitor),
+                    job.schedule_mode,
+                    job.window_start,
+                    job.window_end,
                     self._dt_to_str(job.created_at),
                 ),
             )
@@ -187,6 +208,9 @@ class DatabaseService:
             destination_folder=row["destination_folder"],
             enabled=bool(row["enabled"]),
             auto_monitor=bool(row["auto_monitor"]),
+            schedule_mode=row["schedule_mode"],
+            window_start=row["window_start"],
+            window_end=row["window_end"],
             created_at=self._str_to_dt(row["created_at"]),
         )
 
@@ -204,8 +228,8 @@ class DatabaseService:
                     (id, job_id, file_name, source_path, destination_path,
                      file_size, source_modified, source_hash, destination_hash,
                      status, detected_at, transfer_started, transfer_completed,
-                     error_message, retry_count, verification_passed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    error_message, retry_count, verification_passed, override_window)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -228,6 +252,7 @@ class DatabaseService:
                         if record.verification_passed is not None
                         else None
                     ),
+                    int(record.override_window),
                 ),
             )
             conn.commit()
@@ -297,6 +322,24 @@ class DatabaseService:
                 (job_id, source_path, file_size, source_modified),
             ).fetchone()
             return self._row_to_record(row) if row else None
+        finally:
+            conn.close()
+
+    def get_cleanup_candidates(self, job_id: str, days: int) -> list[TransferRecord]:
+        """
+        Return COMPLETED transfer records older than the specified number of days.
+        Used by the auto-cleanup worker to delete original source files.
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM transfer_records
+                   WHERE job_id = ? AND status = 'COMPLETED'
+                     AND (julianday('now') - julianday(transfer_completed)) >= ?
+                   ORDER BY transfer_completed ASC""",
+                (job_id, days),
+            ).fetchall()
+            return [self._row_to_record(r) for r in rows]
         finally:
             conn.close()
 
@@ -388,4 +431,5 @@ class DatabaseService:
             error_message=row["error_message"],
             retry_count=row["retry_count"],
             verification_passed=bool(verification) if verification is not None else None,
+            override_window=bool(row["override_window"]),
         )

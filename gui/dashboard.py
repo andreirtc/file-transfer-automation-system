@@ -26,7 +26,8 @@ from qfluentwidgets import (
     StrongBodyLabel,
     BodyLabel,
     TitleLabel,
-    SubtitleLabel
+    SubtitleLabel,
+    ComboBox
 )
 
 from core.models import FileStatus, TransferJob, TransferRecord
@@ -77,6 +78,8 @@ class DashboardWidget(QWidget):
     start_monitoring_requested = Signal()
     stop_monitoring_requested = Signal()
     sync_now_requested = Signal()
+    force_start_requested = Signal(str)
+    job_switched = Signal(str) # job id
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -94,8 +97,10 @@ class DashboardWidget(QWidget):
         job_layout.setVerticalSpacing(8)
 
         job_layout.addWidget(StrongBodyLabel("Job:", self._job_group), 0, 0)
-        self._job_name_label = BodyLabel("No job configured", self._job_group)
-        job_layout.addWidget(self._job_name_label, 0, 1)
+        self.job_combo = ComboBox(self._job_group)
+        self.job_combo.setMinimumWidth(200)
+        self.job_combo.currentIndexChanged.connect(self._on_job_combo_changed)
+        job_layout.addWidget(self.job_combo, 0, 1)
 
         job_layout.addWidget(StrongBodyLabel("Source:", self._job_group), 1, 0)
         self._source_label = BodyLabel("—", self._job_group)
@@ -143,6 +148,7 @@ class DashboardWidget(QWidget):
 
         # ── Transfer Table ──
         self._transfer_table = TransferTableWidget(self)
+        self._transfer_table.force_start_requested.connect(self.force_start_requested)
         layout.addWidget(self._transfer_table, stretch=1)
 
         # ── Control Buttons ──
@@ -170,14 +176,45 @@ class DashboardWidget(QWidget):
 
     def update_job_info(self, job: Optional[TransferJob]) -> None:
         """Update the job information panel."""
+        # Block signals to prevent triggering the combo box changed event
+        self.job_combo.blockSignals(True)
+        
         if job:
-            self._job_name_label.setText(job.name)
+            # Set the combo box to the correct job if it's already in the list
+            idx = self.job_combo.findData(job.id)
+            if idx >= 0:
+                self.job_combo.setCurrentIndex(idx)
+            
             self._source_label.setText(job.source_folder)
             self._dest_label.setText(job.destination_folder)
         else:
-            self._job_name_label.setText("No job configured")
+            self.job_combo.clear()
             self._source_label.setText("—")
             self._dest_label.setText("—")
+            
+        self.job_combo.blockSignals(False)
+
+    def update_job_list(self, jobs: list[TransferJob], current_job_id: Optional[str]) -> None:
+        self.job_combo.blockSignals(True)
+        self.job_combo.clear()
+        
+        if not jobs:
+            self.job_combo.addItem("No job configured", userData=None)
+        else:
+            for job in jobs:
+                self.job_combo.addItem(job.name, userData=job.id)
+                
+            if current_job_id:
+                idx = self.job_combo.findData(current_job_id)
+                if idx >= 0:
+                    self.job_combo.setCurrentIndex(idx)
+                    
+        self.job_combo.blockSignals(False)
+
+    def _on_job_combo_changed(self, index: int) -> None:
+        job_id = self.job_combo.currentData()
+        if job_id:
+            self.job_switched.emit(job_id)
 
     def update_monitoring_status(self, is_monitoring: bool) -> None:
         """Update the monitoring status indicator and button states."""

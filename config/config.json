@@ -11,5 +11,7 @@
     "temp_file_prefix": ".",
     "temp_file_suffix": ".transfer_tmp",
     "log_max_bytes": 5242880,
-    "log_backup_count": 3
+    "log_backup_count": 3,
+    "network_drive_mode": true,
+    "auto_cleanup_enabled": true
 }
