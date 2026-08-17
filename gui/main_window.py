@@ -43,6 +43,7 @@ from gui.dialogs import (
     TransferHistoryDialog,
 )
 from gui.job_dialog import JobDialog
+from gui.help_dialog import UserDocumentationDialog
 from services.configuration_service import ConfigurationService
 from services.database_service import DatabaseService
 
@@ -145,6 +146,14 @@ class MainWindow(MSFluentWindow):
             icon=FluentIcon.INFO,
             text="About",
             onClick=self._on_about,
+            position=NavigationItemPosition.BOTTOM
+        )
+
+        self.navigationInterface.addItem(
+            routeKey="help",
+            icon=FluentIcon.HELP,
+            text="User Guide",
+            onClick=self._on_help,
             position=NavigationItemPosition.BOTTOM
         )
 
@@ -335,6 +344,10 @@ class MainWindow(MSFluentWindow):
             self
         )
         msg.exec()
+
+    def _on_help(self):
+        dialog = UserDocumentationDialog(self)
+        dialog.exec()
 
     # ──────────────────────────────────────────────
     # Manager signal handlers
