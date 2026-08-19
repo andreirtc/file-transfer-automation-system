@@ -157,10 +157,10 @@ class TransferJob:
         dst = Path(self.destination_folder)
 
         if self.source_folder and self.destination_folder:
-            # Resolve to handle relative paths and symlinks
+            # Resolve to handle relative paths (avoid .resolve() on Windows network drives)
             try:
-                resolved_src = src.resolve()
-                resolved_dst = dst.resolve()
+                resolved_src = src.absolute()
+                resolved_dst = dst.absolute()
                 if resolved_src == resolved_dst:
                     errors.append("Source and destination cannot be the same folder.")
                 # Prevent nested paths (destination inside source or vice versa)

@@ -69,7 +69,23 @@ class UserDocumentationDialog(MessageBoxBase):
             <p>By default, files transfer continuously. If you only want files to transfer during specific hours (like overnight), edit your Job and set the Schedule Mode to <b>Transfer Window</b>.</p>
             <p>For example, setting the window from <code>23:00</code> to <code>06:00</code> means files dropped into the folder at 2 PM will sit in the <b>WAITING_FOR_WINDOW</b> status until 11 PM, at which point they will automatically transfer.</p>
 
-            <h2>4. Status Definitions</h2>
+            <h2>4. Batch Compression & Encryption</h2>
+            <p>The system can compress all currently queued files into a single ZIP file before transferring.</p>
+            <ul>
+                <li>Enable this feature in the <b>Settings</b> panel.</li>
+                <li>ZIP files are secured with AES encryption.</li>
+                <li>You can configure the <b>Zip Password</b> in Settings.</li>
+                <li>The generated ZIP file is named automatically based on the current timestamp.</li>
+            </ul>
+
+            <h2>5. Managing Jobs</h2>
+            <p>You can edit or delete existing jobs directly from the interface:</p>
+            <ul>
+                <li>Use the <b>Edit Job</b> menu item to change paths or transfer windows.</li>
+                <li>Click the <b>Trash Can</b> icon next to the Job selector on the dashboard to completely delete a job. <i>Note: This permanently deletes the job and all its transfer history records.</i></li>
+            </ul>
+
+            <h2>6. Status Definitions</h2>
             <p>The main dashboard table tracks files through various statuses. Here is what they mean:</p>
             <table>
                 <tr><th>Status</th><th>Meaning</th></tr>
@@ -82,7 +98,7 @@ class UserDocumentationDialog(MessageBoxBase):
                 <tr><td><span style="color: #d13438; font-weight: bold;">FAILED</span></td><td>The transfer failed (network drop, permission issue, etc). It will automatically retry up to 3 times.</td></tr>
             </table>
 
-            <h2>5. Manual Sync</h2>
+            <h2>7. Manual Sync</h2>
             <p>If you have monitoring turned off, or if you just want to force a scan, you can click <b>Sync Now</b>. This will scan the folder, process the files, and ask you for confirmation before starting the transfers.</p>
         </body>
         </html>

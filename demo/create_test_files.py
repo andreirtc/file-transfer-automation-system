@@ -10,13 +10,14 @@ Run this script from the project root:
     python demo/create_test_files.py
 
 Or with the venv:
-    .venv\\Scripts\\python.exe demo/create_test_files.py
+    .venv\Scripts\python.exe demo/create_test_files.py
 """
 
 import os
 import sys
 import time
 from pathlib import Path
+import pyzipper
 
 try:
     import msvcrt
@@ -53,7 +54,7 @@ def create_small_file():
         "This is a sample report file for testing.\n"
         "It should be detected and transferred quickly.\n"
     )
-    print(f"✓ Created small file: {file_path.name} ({file_path.stat().st_size} bytes)")
+    print(f"[+] Created small file: {file_path.name} ({file_path.stat().st_size} bytes)")
     print(f"  Expected: DETECTED → READY → TRANSFERRING → VERIFYING → COMPLETED")
     print()
 
@@ -70,7 +71,7 @@ def create_multiple_files():
     for filename, content in test_files.items():
         file_path = SOURCE_DIR / filename
         file_path.write_text(content, encoding="utf-8", errors="replace")
-        print(f"✓ Created: {filename} ({file_path.stat().st_size} bytes)")
+        print(f"[+] Created: {filename} ({file_path.stat().st_size} bytes)")
 
     print(f"\n  Total: {len(test_files)} files created")
     print()
@@ -111,7 +112,7 @@ def simulate_growing_file():
             time.sleep(delay)
 
     final_size = file_path.stat().st_size
-    print(f"\n✓ File writing complete: {file_path.name} ({final_size:,} bytes)")
+    print(f"\n[+] File writing complete: {file_path.name} ({final_size:,} bytes)")
     print(f"  The system should now transition: PROCESSING → READY → TRANSFERRING")
     print()
 
@@ -143,7 +144,7 @@ def simulate_locked_file():
             print(f"  ⚠️ Unable to acquire lock: {e}")
             return
         
-        print("  ✓ File locked! It should appear as PROCESSING in the app.")
+        print("  [+] File locked! It should appear as PROCESSING in the app.")
         print("  Holding lock for 15 seconds...")
         for i in range(15, 0, -1):
             print(f"  Releasing in {i}s...", end="\r")
@@ -157,7 +158,7 @@ def simulate_locked_file():
         except PermissionError as e:
             print(f"  ⚠️ Unable to release lock: {e}")
         
-        print(f"✓ Lock released: {file_path.name}")
+        print(f"[+] Lock released: {file_path.name}")
         print("  The system should now process the file normally.")
         print()
 
@@ -181,6 +182,44 @@ def print_demo_instructions():
 
 
 
+def extract_and_verify_zip():
+    """Test 10 — Extract and verify password protected ZIP."""
+    print("Looking for zip files in destination...")
+    zips = list(DEST_DIR.glob("**/*.zip"))
+    if not zips:
+        print("  No zip files found in destination directory.")
+        return
+
+    # Sort by modification time to get the latest
+    latest_zip = max(zips, key=lambda p: p.stat().st_mtime)
+    print(f"  Found latest zip: {latest_zip.name}")
+
+    password = input("Enter password to extract (default is 'admin123'): ").strip()
+    if not password:
+        password = "admin123"
+
+    extract_dir = DEMO_DIR / f"extracted_{int(time.time())}"
+    extract_dir.mkdir(exist_ok=True)
+
+    print(f"  Extracting to: {extract_dir.name}...")
+    try:
+        with pyzipper.AESZipFile(latest_zip, 'r') as zf:
+            zf.setpassword(password.encode('utf-8'))
+            zf.extractall(path=extract_dir)
+        print(f"[+] Successfully extracted {len(list(extract_dir.iterdir()))} files!")
+        print("  Files extracted:")
+        for f in extract_dir.iterdir():
+            print(f"   - {f.name} ({f.stat().st_size} bytes)")
+    except RuntimeError as e:
+        if "Bad password" in str(e):
+            print("  [-] Error: Bad password provided!")
+        else:
+            print(f"  [-] Extraction failed: {e}")
+    except Exception as e:
+        print(f"  [-] Unexpected error during extraction: {e}")
+    print()
+
+
 def clean_demo():
     """Remove all files from demo directories."""
     for dir_path in [SOURCE_DIR, DEST_DIR]:
@@ -189,7 +228,7 @@ def clean_demo():
                 if f.is_file() and f.name != ".gitkeep":
                     f.unlink()
                     print(f"  Removed: {f.name}")
-    print("✓ Demo directories cleaned")
+    print("[+] Demo directories cleaned")
     print()
 
 
@@ -208,6 +247,7 @@ def print_menu():
     print("  7. Full demo (setup + small + growing + locked)")
     print("  8. Show instructions for new features")
     print("  9. Change Target Source Directory (For Network Testing)")
+    print("  10. Extract & Verify password-protected batch zip")
     print("  0. Exit")
     print()
     print(f"  Current Target Source: {SOURCE_DIR}")
@@ -250,12 +290,15 @@ def main():
         elif choice == "8":
             print_demo_instructions()
         elif choice == "9":
-            new_dir = input(r"Enter new path (e.g., \\LAPTOP\Share) or press enter for default: ").strip()
+            new_dir = input("Enter new source directory path: ").strip()
             if new_dir:
+                global SOURCE_DIR
                 SOURCE_DIR = Path(new_dir)
-            else:
-                SOURCE_DIR = DEFAULT_SOURCE_DIR
-            print(f"Target Source Directory updated to: {SOURCE_DIR}")
+                SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+                print(f"[+] Changed source directory to: {SOURCE_DIR}")
+                print()
+        elif choice == "10":
+            extract_and_verify_zip()
         else:
             print("Invalid choice. Please enter 0-9.\n")
 

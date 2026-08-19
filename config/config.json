@@ -13,5 +13,7 @@
     "log_max_bytes": 5242880,
     "log_backup_count": 3,
     "network_drive_mode": true,
-    "auto_cleanup_enabled": true
+    "auto_cleanup_enabled": true,
+    "batch_compression_enabled": true,
+    "zip_password": "password123"
 }

@@ -1,27 +1,31 @@
 """
-Transfer manager — the central orchestrator for the File Transfer Automation System.
+Transfer manager — the central multi-job orchestrator for the File Transfer Automation System.
 
 Coordinates all components:
-- FileMonitor: detects new files
-- FileSafetyChecker: verifies files are safe to copy
-- TransferEngine: performs the actual copy + verification
-- DatabaseService: persists transfer history
-- ConfigurationService: provides settings
+- JobController: manages a single job's background monitor, safety checker, and schedule
+- TransferManager: central multi-job registry orchestrating all active jobs concurrently
+- TransferWorker: background QThread worker handling batch compression (ZipCrypto) and safe transfer
+- DatabaseService: persists transfer history and job configs
+- ConfigurationService: provides global settings
 
-Runs background processing via QThread workers to keep the GUI responsive.
-Emits Qt signals for all state changes so the GUI can update.
+All enabled jobs run concurrently in the background regardless of active UI navigation.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 import threading
 import time
-from datetime import datetime, time as dt_time
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
+
+import pyminizip
 
 from core.file_monitor import FileMonitor
 from core.file_safety import FileSafetyChecker
@@ -44,11 +48,11 @@ error_logger = logging.getLogger("error")
 
 
 class TransferWorker(QThread):
-    """Background worker that processes the transfer queue one file at a time."""
+    """Background worker that processes the transfer queue."""
 
-    transfer_started = Signal(str)          # record_id
+    transfer_started = Signal(str)                  # record_id
     transfer_progress = Signal(str, str, int, int)  # record_id, phase, current, total
-    transfer_completed = Signal(str, object)  # record_id, TransferResult
+    transfer_completed = Signal(str, object)        # record_id, TransferResult
     all_done = Signal()
 
     def __init__(
@@ -56,51 +60,731 @@ class TransferWorker(QThread):
         records: list[TransferRecord],
         engine: TransferEngine,
         db: DatabaseService,
+        config: ConfigurationService,
+        job: Optional[TransferJob] = None,
         parent: Optional[QObject] = None,
     ):
         super().__init__(parent)
         self._records = records
         self._engine = engine
         self._db = db
+        self._config = config
+        self._job = job
         self._cancel_requested = False
 
     def cancel(self) -> None:
         self._cancel_requested = True
 
     def run(self) -> None:
+        if not self._records:
+            self.all_done.emit()
+            return
+
+        if self._config.batch_compression_enabled and len(self._records) > 0:
+            self._run_batch_compression()
+        else:
+            self._run_individual_transfers()
+
+    def _run_individual_transfers(self) -> None:
         for record in self._records:
             if self._cancel_requested:
                 break
 
             self.transfer_started.emit(record.id)
 
-            def progress_cb(phase: str, current: int, total: int) -> None:
-                self.transfer_progress.emit(record.id, phase, current, total)
+            def make_cb(rid: str):
+                return lambda p, c, t: self.transfer_progress.emit(rid, p, c, t)
 
-            result = self._engine.transfer_file(record, progress_cb)
-
-            # Persist the updated record
+            result = self._engine.transfer_file(record, make_cb(record.id))
             self._db.save_record(record)
             self.transfer_completed.emit(record.id, result)
 
         self.all_done.emit()
 
+    def _run_batch_compression(self) -> None:
+        temp_zip_path = None
+        try:
+            for record in self._records:
+                self.transfer_started.emit(record.id)
+
+            password = self._config.zip_password if self._config.zip_password else None
+
+            job = self._job
+            source_folder = job.source_folder if job else None
+
+            # Format zip filename: YYYY-MM-DD_<time>.zip
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            if job and job.schedule_mode == "window" and job.window_start:
+                clean_ws = job.window_start.replace(":", "").strip()
+                if len(clean_ws) == 4:
+                    time_str = clean_ws + "00"
+                elif len(clean_ws) == 6:
+                    time_str = clean_ws
+                else:
+                    time_str = datetime.now().strftime("%H%M%S")
+            else:
+                time_str = datetime.now().strftime("%H%M%S")
+
+            base_zip_name = f"{date_str}_{time_str}"
+            temp_zip_name = f"{base_zip_name}.zip"
+
+            temp_dir = tempfile.gettempdir()
+            temp_zip_path = os.path.join(temp_dir, f"batch_transfer_{temp_zip_name}")
+
+            if self._cancel_requested:
+                self.all_done.emit()
+                return
+
+            if job and job.destination_folder:
+                dest_dir = Path(job.destination_folder)
+            else:
+                dest_dir = Path(self._records[0].destination_path).parent
+
+            target_path = dest_dir / temp_zip_name
+            counter = 1
+            while target_path.exists():
+                temp_zip_name = f"{base_zip_name}_{counter}.zip"
+                target_path = dest_dir / temp_zip_name
+                counter += 1
+
+            successful_records = []
+            src_paths_for_zip = []
+            prefixes_for_zip = []
+
+            for record in self._records:
+                if self._cancel_requested:
+                    break
+                src_path = Path(record.source_path)
+                if not src_path.exists():
+                    logger.error(f"Source file missing: {src_path}")
+                    record.status = FileStatus.FAILED
+                    record.error_message = "Source file missing"
+                    self._db.save_record(record)
+                    self.transfer_completed.emit(
+                        record.id, TransferResult(success=False, record=record, error_message="Source file missing")
+                    )
+                    continue
+
+                if source_folder:
+                    try:
+                        rel_dir = str(
+                            src_path.relative_to(Path(source_folder)).parent
+                        ).replace("\\", "/")
+                        if rel_dir == ".":
+                            rel_dir = ""
+                    except ValueError:
+                        rel_dir = ""
+                else:
+                    rel_dir = ""
+
+                src_paths_for_zip.append(str(src_path.resolve()))
+                prefixes_for_zip.append(rel_dir)
+                successful_records.append(record)
+
+            if self._cancel_requested or not successful_records:
+                if temp_zip_path and os.path.exists(temp_zip_path):
+                    try:
+                        os.remove(temp_zip_path)
+                    except OSError:
+                        pass
+                self.all_done.emit()
+                return
+
+            if os.path.exists(temp_zip_path):
+                try:
+                    os.remove(temp_zip_path)
+                except OSError:
+                    pass
+
+            # Create standard ZipCrypto encrypted ZIP
+            pyminizip.compress_multiple(
+                src_paths_for_zip,
+                prefixes_for_zip,
+                temp_zip_path,
+                password,
+                4,
+            )
+
+            for record in successful_records:
+                self.transfer_progress.emit(record.id, "compressing", 100, 100)
+
+            valid_records = successful_records
+            first_record = valid_records[0]
+
+            zip_record = TransferRecord(
+                id=str(uuid.uuid4()),
+                job_id=first_record.job_id,
+                file_name=temp_zip_name,
+                source_path=temp_zip_path,
+                destination_path=str(target_path),
+                file_size=Path(temp_zip_path).stat().st_size,
+                source_modified=Path(temp_zip_path).stat().st_mtime,
+                status=FileStatus.QUEUED,
+            )
+
+            def progress_cb(phase: str, current: int, total: int) -> None:
+                for r in valid_records:
+                    self.transfer_progress.emit(r.id, phase, current, total)
+
+            result = self._engine.transfer_file(zip_record, progress_cb)
+
+            for record in valid_records:
+                if result.success:
+                    record.status = FileStatus.COMPLETED
+                    record.destination_path = str(target_path)
+                    record.transfer_completed = zip_record.transfer_completed
+                    record.source_hash = zip_record.source_hash
+                    record.destination_hash = zip_record.destination_hash
+                    record.verification_passed = True
+                else:
+                    record.status = FileStatus.FAILED
+                    record.error_message = f"Batch transfer failed: {result.error_message}"
+
+                self._db.save_record(record)
+                self.transfer_completed.emit(record.id, result)
+
+        finally:
+            if temp_zip_path and os.path.exists(temp_zip_path):
+                try:
+                    os.remove(temp_zip_path)
+                except OSError:
+                    pass
+            self.all_done.emit()
+
+
+class JobController(QObject):
+    """
+    Background controller managing an individual transfer job's pipeline:
+    monitoring, file safety checks, schedule checking, and queue dispatching.
+    """
+
+    file_detected = Signal(str, str, object)          # job_id, file_path, TransferRecord
+    files_detected = Signal(str, list)                # job_id, list[TransferRecord]
+    file_status_changed = Signal(str, str, object)    # job_id, record_id, FileStatus
+    transfer_progress = Signal(str, str, str, int, int)  # job_id, record_id, phase, current, total
+    transfer_completed = Signal(str, str, object)     # job_id, record_id, TransferResult
+    stats_updated = Signal(str, dict)                 # job_id, {status: count}
+    monitoring_changed = Signal(str, bool)            # job_id, is_monitoring
+    conflict_detected = Signal(str, object)           # job_id, TransferRecord
+    log_message = Signal(str, str, str)               # job_id, level, message
+
+    def __init__(
+        self,
+        job: TransferJob,
+        config: ConfigurationService,
+        db: DatabaseService,
+        parent: Optional[QObject] = None,
+    ):
+        super().__init__(parent)
+        self.job = job
+        self._config = config
+        self._db = db
+
+        self._safety = FileSafetyChecker(
+            stability_interval=config.stability_check_interval,
+            required_stable_checks=config.required_stable_checks,
+        )
+        self._integrity = IntegrityVerifier(
+            chunk_size=config.hash_chunk_size,
+        )
+        self._engine = TransferEngine(
+            self._safety,
+            self._integrity,
+            temp_prefix=config.temp_file_prefix,
+            temp_suffix=config.temp_file_suffix,
+        )
+
+        self._monitor: Optional[FileMonitor] = None
+        self._active_records: dict[str, TransferRecord] = {}
+        self._worker: Optional[TransferWorker] = None
+        self._is_transferring = False
+        self._last_window_executed_minute: Optional[str] = None
+
+        # Safety timer
+        self._safety_timer = QTimer(self)
+        self._safety_timer.timeout.connect(self._run_safety_checks)
+
+        # Window check timer (runs every 3 seconds)
+        self._window_timer = QTimer(self)
+        self._window_timer.timeout.connect(self._check_windows)
+        self._window_timer.setInterval(3000)
+
+        # Retry timer
+        self._retry_timer = QTimer(self)
+        self._retry_timer.timeout.connect(self._process_retries)
+        self._retry_timer.setInterval(self._config.retry_delay * 1000)
+
+        # Cleanup timer
+        self._cleanup_timer = QTimer(self)
+        self._cleanup_timer.timeout.connect(self._run_auto_cleanup)
+        self._cleanup_timer.setInterval(3600 * 1000)
+
+        # Load active records from DB
+        self._load_active_records()
+
+    def _load_active_records(self) -> None:
+        active = self._db.get_active_records(self.job.id)
+        for record in active:
+            self._active_records[record.source_path] = record
+
+    @property
+    def is_monitoring(self) -> bool:
+        return self._monitor is not None and self._monitor.is_running
+
+    @property
+    def is_in_transfer_window(self) -> bool:
+        """Check if current time is within the allowed transfer window."""
+        if self.job.schedule_mode != "window":
+            return True
+        try:
+            now = datetime.now().time()
+            start_time = datetime.strptime(self.job.window_start, "%H:%M").time()
+            end_time_base = datetime.strptime(self.job.window_end, "%H:%M").time()
+            end_time = end_time_base.replace(second=59, microsecond=999999)
+            if start_time <= end_time:
+                return start_time <= now <= end_time
+            else:
+                return now >= start_time or now <= end_time
+        except (ValueError, AttributeError):
+            return True
+
+    def start_monitoring(self) -> None:
+        """Start monitoring source folder for this job."""
+        if self.is_monitoring:
+            return
+
+        interval_ms = self._config.stability_check_interval * 1000
+        self._safety_timer.start(interval_ms)
+        self._retry_timer.start()
+        self._window_timer.start()
+        self._cleanup_timer.start()
+
+        recon_interval = self._config.reconciliation_interval
+        if self._config.network_drive_mode:
+            recon_interval = min(recon_interval, 10)
+
+        try:
+            src = Path(self.job.source_folder)
+            src.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.log_message.emit(self.job.id, "error", f"Cannot create source folder: {e}")
+            return
+
+        self._monitor = FileMonitor(
+            source_folder=self.job.source_folder,
+            on_file_detected=self._on_file_detected,
+            reconciliation_interval=recon_interval,
+            temp_suffix=self._config.temp_file_suffix,
+        )
+        self._monitor.start()
+
+        def _start_and_scan():
+            try:
+                self._monitor.update_known_files()
+                existing_files = self._monitor.scan_folder()
+
+                if existing_files:
+                    batch_records = []
+                    for fpath in existing_files:
+                        try:
+                            fsize = Path(fpath).stat().st_size
+                            mtime = Path(fpath).stat().st_mtime
+                        except OSError:
+                            continue
+
+                        if self._db.check_already_transferred(self.job.id, fpath, fsize, mtime):
+                            continue
+                        if fpath in self._active_records:
+                            continue
+
+                        status = FileStatus.DETECTED
+                        if self.job.schedule_mode == "window":
+                            status = FileStatus.WAITING_FOR_WINDOW
+
+                        rec = TransferRecord(
+                            job_id=self.job.id,
+                            file_name=Path(fpath).name,
+                            source_path=fpath,
+                            destination_path=str(Path(self.job.destination_folder) / Path(fpath).name),
+                            file_size=fsize,
+                            source_modified=mtime,
+                            status=status,
+                        )
+                        self._active_records[fpath] = rec
+                        batch_records.append(rec)
+
+                    if batch_records:
+                        self._db.save_records_batch(batch_records)
+                        self.files_detected.emit(self.job.id, batch_records)
+                        self._emit_stats()
+
+            except Exception as e:
+                logger.exception("Initial scan error for job %s: %s", self.job.name, e)
+
+        threading.Thread(target=_start_and_scan, daemon=True).start()
+        self.monitoring_changed.emit(self.job.id, True)
+        self.log_message.emit(self.job.id, "info", f"Started monitoring '{self.job.name}'")
+
+    def stop_monitoring(self) -> None:
+        """Stop background monitoring for this job."""
+        if not self.is_monitoring:
+            return
+
+        if self._monitor:
+            self._monitor.stop()
+            self._monitor = None
+
+        self._safety_timer.stop()
+        self._retry_timer.stop()
+        self._window_timer.stop()
+
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+
+        self.monitoring_changed.emit(self.job.id, False)
+        self.log_message.emit(self.job.id, "info", f"Stopped monitoring '{self.job.name}'")
+
+    def _on_file_detected(self, file_path: str) -> None:
+        """Handle new file event from FileMonitor."""
+        try:
+            p = Path(file_path)
+            if not p.exists() or p.is_dir():
+                return
+            file_size = p.stat().st_size
+            source_modified = p.stat().st_mtime
+        except OSError:
+            return
+
+        if self._db.check_already_transferred(self.job.id, file_path, file_size, source_modified):
+            return
+
+        if file_path in self._active_records:
+            rec = self._active_records[file_path]
+            if rec.status in (FileStatus.COMPLETED, FileStatus.SKIPPED):
+                return
+            rec.file_size = file_size
+            rec.source_modified = source_modified
+        else:
+            status = FileStatus.DETECTED
+            if self.job.schedule_mode == "window":
+                status = FileStatus.WAITING_FOR_WINDOW
+
+            rec = TransferRecord(
+                job_id=self.job.id,
+                file_name=Path(file_path).name,
+                source_path=file_path,
+                destination_path=str(Path(self.job.destination_folder) / Path(file_path).name),
+                file_size=file_size,
+                source_modified=source_modified,
+                status=status,
+            )
+            self._active_records[file_path] = rec
+
+        self._db.save_record(rec)
+        self.file_detected.emit(self.job.id, file_path, rec)
+        self._emit_stats()
+
+    def _run_safety_checks(self) -> None:
+        """Periodically check pending files for lock release & stability."""
+        to_check = [
+            r for r in list(self._active_records.values())
+            if r.status in (FileStatus.DETECTED, FileStatus.PROCESSING)
+        ]
+        if not to_check:
+            return
+
+        ready_files = []
+        for record in to_check:
+            status = self._safety.check_file(record.source_path)
+            if status != record.status:
+                record.status = status
+                if status == FileStatus.READY:
+                    if self.job.schedule_mode == "window" and not record.override_window:
+                        record.status = FileStatus.WAITING_FOR_WINDOW
+                    else:
+                        ready_files.append(record)
+
+                self._db.save_record(record)
+                self.file_status_changed.emit(self.job.id, record.id, record.status)
+
+        if ready_files and self.is_monitoring and self.job.schedule_mode == "continuous":
+            self._queue_files(ready_files)
+
+        self._emit_stats()
+
+    def _check_windows(self) -> None:
+        """
+        Scheduled Transfer Execution:
+        At the configured window_end time, execute the batch transfer of all accumulated files!
+        """
+        if self.job.schedule_mode != "window":
+            return
+
+        now = datetime.now()
+        now_time = now.time()
+
+        try:
+            end_time_base = datetime.strptime(self.job.window_end, "%H:%M").time()
+        except (ValueError, AttributeError):
+            return
+
+        current_minute = now.strftime("%Y-%m-%d_%H:%M")
+        is_end_minute = (now_time.hour == end_time_base.hour and now_time.minute == end_time_base.minute)
+
+        if is_end_minute and self._last_window_executed_minute != current_minute:
+            self._last_window_executed_minute = current_minute
+
+            # Gather all waiting files
+            waiting = [
+                r for r in list(self._active_records.values())
+                if r.status in (FileStatus.WAITING_FOR_WINDOW, FileStatus.READY, FileStatus.PROCESSING, FileStatus.DETECTED)
+            ]
+
+            # Also check DB for any waiting records
+            db_records = self._db.get_active_records(self.job.id)
+            for r in db_records:
+                if r.source_path not in self._active_records:
+                    self._active_records[r.source_path] = r
+                    waiting.append(r)
+
+            if waiting:
+                logger.info("Window end reached (%s) for '%s'. Executing batch transfer for %d files.",
+                            self.job.window_end, self.job.name, len(waiting))
+                self.log_message.emit(
+                    self.job.id,
+                    "info",
+                    f"Window end reached ({self.job.window_end}). Executing batch transfer for {len(waiting)} file(s)...",
+                )
+                for record in waiting:
+                    record.status = FileStatus.READY
+                    self.file_status_changed.emit(self.job.id, record.id, record.status)
+
+                self._db.save_records_batch(waiting)
+                self._queue_files(waiting)
+                self._emit_stats()
+
+    def sync_now(self) -> tuple[list[TransferRecord], list[TransferRecord]]:
+        """Manual sync scan for this job."""
+        if not self._monitor:
+            recon_interval = self._config.reconciliation_interval
+            self._monitor = FileMonitor(
+                source_folder=self.job.source_folder,
+                on_file_detected=self._on_file_detected,
+                reconciliation_interval=recon_interval,
+                temp_suffix=self._config.temp_file_suffix,
+            )
+
+        self._monitor.update_known_files()
+        found_files = self._monitor.scan_folder()
+
+        for fpath in found_files:
+            try:
+                fsize = Path(fpath).stat().st_size
+                mtime = Path(fpath).stat().st_mtime
+            except OSError:
+                continue
+
+            if self._db.check_already_transferred(self.job.id, fpath, fsize, mtime):
+                continue
+
+            if fpath not in self._active_records:
+                rec = TransferRecord(
+                    job_id=self.job.id,
+                    file_name=Path(fpath).name,
+                    source_path=fpath,
+                    destination_path=str(Path(self.job.destination_folder) / Path(fpath).name),
+                    file_size=fsize,
+                    source_modified=mtime,
+                    status=FileStatus.DETECTED,
+                )
+                self._active_records[fpath] = rec
+                self._db.save_record(rec)
+
+        # Run safety check on all detected files
+        ready: list[TransferRecord] = []
+        processing: list[TransferRecord] = []
+
+        for rec in list(self._active_records.values()):
+            if rec.status in (FileStatus.DETECTED, FileStatus.PROCESSING, FileStatus.WAITING_FOR_WINDOW):
+                st = self._safety.check_file(rec.source_path)
+                rec.status = st
+                self._db.save_record(rec)
+                if st == FileStatus.READY:
+                    ready.append(rec)
+                elif st == FileStatus.PROCESSING:
+                    processing.append(rec)
+
+        self._emit_stats()
+        return ready, processing
+
+    def transfer_ready_files(self, override: bool = False) -> int:
+        """Transfer all currently ready files for this job."""
+        ready = []
+        for r in list(self._active_records.values()):
+            if r.status in (FileStatus.READY, FileStatus.WAITING_FOR_WINDOW):
+                if override or r.override_window:
+                    r.override_window = True
+                    r.status = FileStatus.READY
+                    self._db.save_record(r)
+                    ready.append(r)
+                elif self.is_in_transfer_window:
+                    r.status = FileStatus.READY
+                    self._db.save_record(r)
+                    ready.append(r)
+                else:
+                    r.status = FileStatus.WAITING_FOR_WINDOW
+                    self._db.save_record(r)
+                    self.file_status_changed.emit(self.job.id, r.id, r.status)
+
+        return self._queue_files(ready)
+
+    def force_start(self, record_id: str) -> None:
+        record = self._find_record_by_id(record_id)
+        if record and record.status in (FileStatus.PROCESSING, FileStatus.WAITING_FOR_WINDOW, FileStatus.READY):
+            record.override_window = True
+            record.status = FileStatus.READY
+            self._db.save_record(record)
+            self.file_status_changed.emit(self.job.id, record.id, record.status)
+            self._queue_file(record)
+
+    def _queue_file(self, record: TransferRecord, auto_start: bool = True) -> bool:
+        if not self.is_in_transfer_window and not record.override_window:
+            record.status = FileStatus.WAITING_FOR_WINDOW
+            self._db.save_record(record)
+            self.file_status_changed.emit(self.job.id, record.id, record.status)
+            self._emit_stats()
+            return False
+
+        record.status = FileStatus.QUEUED
+        self._db.save_record(record)
+        self.file_status_changed.emit(self.job.id, record.id, record.status)
+        self._emit_stats()
+
+        if auto_start and not self._is_transferring:
+            self._start_transfer_batch()
+        return True
+
+    def _queue_files(self, records: list[TransferRecord]) -> int:
+        queued_count = 0
+        for record in records:
+            if self._queue_file(record, auto_start=False):
+                queued_count += 1
+        if queued_count > 0 and not self._is_transferring:
+            self._start_transfer_batch()
+        return queued_count
+
+    def _start_transfer_batch(self) -> None:
+        if self._is_transferring:
+            return
+
+        queued = [
+            r for r in list(self._active_records.values())
+            if r.status == FileStatus.QUEUED
+        ]
+        if not queued:
+            return
+
+        self._is_transferring = True
+        self._worker = TransferWorker(
+            records=queued,
+            engine=self._engine,
+            db=self._db,
+            config=self._config,
+            job=self.job,
+            parent=self,
+        )
+        self._worker.transfer_started.connect(self._on_transfer_started)
+        self._worker.transfer_progress.connect(self._on_transfer_progress)
+        self._worker.transfer_completed.connect(self._on_transfer_completed)
+        self._worker.all_done.connect(self._on_all_transfers_done)
+        self._worker.start()
+
+    def _on_transfer_started(self, record_id: str) -> None:
+        record = self._find_record_by_id(record_id)
+        if record:
+            self.file_status_changed.emit(self.job.id, record_id, FileStatus.TRANSFERRING)
+
+    def _on_transfer_progress(self, record_id: str, phase: str, cur: int, tot: int) -> None:
+        self.transfer_progress.emit(self.job.id, record_id, phase, cur, tot)
+
+    def _on_transfer_completed(self, record_id: str, result: TransferResult) -> None:
+        record = self._find_record_by_id(record_id)
+        if record:
+            self._db.save_record(record)
+            self.transfer_completed.emit(self.job.id, record_id, result)
+        self._emit_stats()
+
+    def _on_all_transfers_done(self) -> None:
+        self._is_transferring = False
+        self._worker = None
+
+        # Clean active completed records from in-memory dictionary
+        completed_paths = [
+            path for path, r in self._active_records.items()
+            if r.status in (FileStatus.COMPLETED, FileStatus.SKIPPED)
+        ]
+        for path in completed_paths:
+            del self._active_records[path]
+
+        self._emit_stats()
+
+    def _process_retries(self) -> None:
+        failed = [
+            r for r in list(self._active_records.values())
+            if r.status == FileStatus.FAILED and r.retry_count < self._config.max_retries
+        ]
+        for record in failed:
+            record.retry_count += 1
+            record.status = FileStatus.DETECTED
+            self._db.save_record(record)
+            self.file_status_changed.emit(self.job.id, record.id, record.status)
+        if failed:
+            self._emit_stats()
+
+    def _run_auto_cleanup(self) -> None:
+        if not self._config.auto_cleanup_days or self._config.auto_cleanup_days <= 0:
+            return
+        candidates = self._db.get_cleanup_candidates(self.job.id, self._config.auto_cleanup_days)
+        deleted = 0
+        for record in candidates:
+            sp = Path(record.source_path)
+            dp = Path(record.destination_path)
+            if sp.exists() and dp.exists():
+                try:
+                    sp.unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+        if deleted > 0:
+            self.log_message.emit(self.job.id, "info", f"Auto-cleanup deleted {deleted} old source file(s)")
+
+    def _find_record_by_id(self, record_id: str) -> Optional[TransferRecord]:
+        for r in self._active_records.values():
+            if r.id == record_id:
+                return r
+        return self._db.get_record_by_id(record_id)
+
+    def _emit_stats(self) -> None:
+        stats = self._db.get_statistics(self.job.id)
+        self.stats_updated.emit(self.job.id, stats)
+
 
 class TransferManager(QObject):
     """
-    Central orchestrator for file transfer operations.
+    Central Multi-Job Transfer Manager.
 
-    Manages the full lifecycle: detect → safety check → queue →
-    transfer → verify → persist. Emits signals for GUI updates.
+    Coordinates all configured transfer jobs concurrently, allowing each
+    job to monitor, safety-check, and execute transfers independently in the background.
     """
 
-    # Signals for GUI binding
+    # Global signals forwarded to GUI
     file_detected = Signal(str, object)          # file_path, TransferRecord
+    files_detected = Signal(list)                # list[TransferRecord]
     file_status_changed = Signal(str, object)    # record_id, FileStatus
     transfer_progress = Signal(str, str, int, int)  # record_id, phase, current, total
     transfer_completed = Signal(str, object)     # record_id, TransferResult
-    stats_updated = Signal(dict)                 # {status: count}
-    monitoring_changed = Signal(bool)            # is_monitoring
+    stats_updated = Signal(dict)                 # {status: count} for active job
+    monitoring_changed = Signal(bool)            # is_monitoring for active job
     conflict_detected = Signal(object)           # TransferRecord
     log_message = Signal(str, str)               # level, message
 
@@ -113,52 +797,42 @@ class TransferManager(QObject):
         super().__init__(parent)
         self._config = config
         self._db = db
-
-        # Core components
-        self._safety = FileSafetyChecker(
-            stability_interval=config.stability_check_interval,
-            required_stable_checks=config.required_stable_checks,
-        )
-        self._integrity = IntegrityVerifier(
-            algorithm=config.hash_algorithm,
-            chunk_size=config.hash_chunk_size,
-        )
-        self._engine = TransferEngine(
-            safety_checker=self._safety,
-            integrity_verifier=self._integrity,
-            temp_prefix=config.temp_file_prefix,
-            temp_suffix=config.temp_file_suffix,
-        )
-
-        # State
+        self._controllers: dict[str, JobController] = {}
         self._current_job: Optional[TransferJob] = None
-        self._monitor: Optional[FileMonitor] = None
-        self._active_records: dict[str, TransferRecord] = {}  # source_path → record
-        self._worker: Optional[TransferWorker] = None
-        self._is_transferring = False
 
-        # Safety check timer — periodically re-checks PROCESSING files
-        self._safety_timer = QTimer(self)
-        self._safety_timer.timeout.connect(self._run_safety_checks)
+        self.reload_jobs()
 
-        # Window check timer - checks if waiting files can be queued
-        self._window_timer = QTimer(self)
-        self._window_timer.timeout.connect(self._check_windows)
-        self._window_timer.setInterval(60000) # 1 minute
+    def reload_jobs(self) -> None:
+        """Reload all jobs from database and synchronize job controllers."""
+        jobs = self._db.get_jobs()
+        job_map = {j.id: j for j in jobs}
 
-        # Retry timer
-        self._retry_timer = QTimer(self)
-        self._retry_timer.timeout.connect(self._process_retries)
-        self._retry_timer.setInterval(self._config.retry_delay * 1000)
+        # Stop and remove controllers for deleted jobs
+        for jid in list(self._controllers.keys()):
+            if jid not in job_map:
+                ctrl = self._controllers.pop(jid)
+                ctrl.stop_monitoring()
+                ctrl.deleteLater()
 
-        # Cleanup timer (runs every hour)
-        self._cleanup_timer = QTimer(self)
-        self._cleanup_timer.timeout.connect(self._run_auto_cleanup)
-        self._cleanup_timer.setInterval(3600 * 1000)  # 1 hour
+        # Add or update controllers for existing jobs
+        for job in jobs:
+            if job.id in self._controllers:
+                self._controllers[job.id].job = job
+            else:
+                ctrl = JobController(job, self._config, self._db, self)
+                ctrl.file_detected.connect(self._on_ctrl_file_detected)
+                ctrl.files_detected.connect(self._on_ctrl_files_detected)
+                ctrl.file_status_changed.connect(self._on_ctrl_file_status_changed)
+                ctrl.transfer_progress.connect(self._on_ctrl_transfer_progress)
+                ctrl.transfer_completed.connect(self._on_ctrl_transfer_completed)
+                ctrl.stats_updated.connect(self._on_ctrl_stats_updated)
+                ctrl.monitoring_changed.connect(self._on_ctrl_monitoring_changed)
+                ctrl.conflict_detected.connect(self._on_ctrl_conflict_detected)
+                ctrl.log_message.connect(self._on_ctrl_log_message)
+                self._controllers[job.id] = ctrl
 
-    # ──────────────────────────────────────────────
-    # Job management
-    # ──────────────────────────────────────────────
+    def get_controller(self, job_id: str) -> Optional[JobController]:
+        return self._controllers.get(job_id)
 
     @property
     def current_job(self) -> Optional[TransferJob]:
@@ -166,606 +840,192 @@ class TransferManager(QObject):
 
     @property
     def is_monitoring(self) -> bool:
-        return self._monitor is not None and self._monitor.is_running
-
-    @property
-    def is_transferring(self) -> bool:
-        return self._is_transferring
+        if self._current_job and self._current_job.id in self._controllers:
+            return self._controllers[self._current_job.id].is_monitoring
+        return False
 
     @property
     def active_records(self) -> dict[str, TransferRecord]:
-        return dict(self._active_records)
-
-    def set_job(self, job: TransferJob) -> None:
-        """Set the active transfer job. Stops any existing monitoring."""
-        if self.is_monitoring:
-            self.stop_monitoring()
-
-        self._current_job = job
-        self._active_records.clear()
-        self._safety.clear()
-
-        # Clean up stale states from previous runs
-        self._db.clear_stale_states(job.id)
-
-        # Load any active records from the database
-        active = self._db.get_active_records(job.id)
-        for record in active:
-            self._active_records[record.source_path] = record
-
-        logger.info("Job set: '%s'", job.name)
-        self._emit_stats()
-
-    # ──────────────────────────────────────────────
-    # Monitoring
-    # ──────────────────────────────────────────────
-
-    def start_monitoring(self) -> None:
-        """Start monitoring the current job's source folder."""
-        if not self._current_job:
-            logger.warning("Cannot start monitoring: no job set")
-            return
-
-        if self.is_monitoring:
-            logger.warning("Already monitoring")
-            return
-
-        job = self._current_job
-
-        # Ensure source folder exists
-        source = Path(job.source_folder)
-        if not source.exists():
-            try:
-                source.mkdir(parents=True, exist_ok=True)
-                logger.info("Created source folder: %s", source)
-            except OSError as e:
-                error_logger.error("Cannot create source folder: %s", e)
-                self.log_message.emit("error", f"Cannot create source folder: {e}")
-                return
-
-        recon_interval = self._config.reconciliation_interval
-        if self._config.network_drive_mode:
-            recon_interval = min(recon_interval, 10)  # fast polling for networks
-            logger.info("Network Drive Mode enabled: forcing fast reconciliation (every %ss)", recon_interval)
-
-        self._monitor = FileMonitor(
-            source_folder=job.source_folder,
-            on_file_detected=self._on_file_detected,
-            reconciliation_interval=recon_interval,
-            temp_suffix=self._config.temp_file_suffix,
-        )
-        self._monitor.start()
-
-        # Start the safety check timer
-        interval_ms = self._config.stability_check_interval * 1000
-        self._safety_timer.start(interval_ms)
-        self._retry_timer.start()
-        self._window_timer.start()
-
-        # Initial scan to pick up existing files
-        self._monitor.update_known_files()
-        existing_files = self._monitor.scan_folder()
-        for file_path in existing_files:
-            self._on_file_detected(file_path)
-
-        self.monitoring_changed.emit(True)
-        logger.info("Monitoring started for '%s'", job.name)
-        self.log_message.emit("info", "Monitoring started")
-
-        if self._config.auto_cleanup_enabled:
-            self._cleanup_timer.start()
-            self._run_auto_cleanup()  # Run immediately on start
-
-    def stop_monitoring(self) -> None:
-        """Stop monitoring."""
-        if self._monitor:
-            self._monitor.stop()
-            self._monitor = None
-
-        self._safety_timer.stop()
-        self._retry_timer.stop()
-        self._cleanup_timer.stop()
-        self._window_timer.stop()
-
-        self.monitoring_changed.emit(False)
-        logger.info("Monitoring stopped")
-        self.log_message.emit("info", "Monitoring stopped")
-
-    # ──────────────────────────────────────────────
-    # File detection
-    # ──────────────────────────────────────────────
-
-    def _on_file_detected(self, file_path: str) -> None:
-        """Called when a new or modified file is detected."""
-        if not self._current_job:
-            return
-
-        source_path = str(Path(file_path))
-        job = self._current_job
-
-        # Check if we're already tracking this file
-        if source_path in self._active_records:
-            existing = self._active_records[source_path]
-            if existing.status in (FileStatus.COMPLETED, FileStatus.SKIPPED):
-                # Check if source has changed since last transfer
-                try:
-                    stat = Path(source_path).stat()
-                    prev = self._db.check_already_transferred(
-                        job.id, source_path, stat.st_size, stat.st_mtime
-                    )
-                    if prev:
-                        # Same file, already transferred — skip
-                        return
-                    # File changed — treat as new version
-                    logger.info("Modified version detected: %s", Path(source_path).name)
-                except OSError:
-                    return
-            elif existing.status.is_active():
-                # Already being processed — don't create a duplicate
-                return
-
-        # Check if this file was already successfully transferred
-        file_size = 0
-        source_modified = 0.0
-        initial_status = FileStatus.DETECTED
-        
-        try:
-            stat = Path(source_path).stat()
-            file_size = stat.st_size
-            source_modified = stat.st_mtime
-            prev = self._db.check_already_transferred(
-                job.id, source_path, file_size, source_modified
-            )
-            if prev:
-                logger.info("Already transferred: %s", Path(source_path).name)
-                return
-        except OSError as e:
-            logger.warning("Cannot stat file %s (likely locked by Windows): %s", source_path, e)
-            # Proceed anyway so UI shows the file in processing state,
-            # wait for it to be accessible via safety checks.
-            initial_status = FileStatus.PROCESSING
-
-        # Create a new transfer record
-        file_path_obj = Path(source_path)
-        
-        # Use Timestamped folder structure: Destination/YYYY-MM-DD_HHMMSS/filename.ext
-        timestamp_folder = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        dest_path = str(Path(job.destination_folder) / timestamp_folder / file_path_obj.name)
-
-        record = TransferRecord(
-            job_id=job.id,
-            file_name=file_path_obj.name,
-            source_path=source_path,
-            destination_path=dest_path,
-            file_size=file_size,
-            source_modified=source_modified,
-            status=initial_status,
-        )
-
-        self._active_records[source_path] = record
-        self._db.save_record(record)
-
-        self.file_detected.emit(source_path, record)
-        self._emit_stats()
-
-        transfer_logger.info("File detected: %s (%s)", record.file_name, record.display_size)
-        self.log_message.emit("info", f"File detected: {record.file_name}")
-
-        # Immediately run a safety check if it's not locked, otherwise wait
-        if initial_status != FileStatus.PROCESSING:
-            self._check_file_safety(record)
-
-    # ──────────────────────────────────────────────
-    # Safety checks
-    # ──────────────────────────────────────────────
-
-    def _run_safety_checks(self) -> None:
-        """Periodic safety check for all DETECTED/PROCESSING files."""
-        for source_path, record in list(self._active_records.items()):
-            if record.status in (FileStatus.DETECTED, FileStatus.PROCESSING):
-                self._check_file_safety(record)
-
-    def _check_file_safety(self, record: TransferRecord) -> None:
-        """Run a safety check on a single file and update its state."""
-        status = self._safety.check_file(record.source_path)
-
-        if status == record.status:
-            return  # No change
-
-        old_status = record.status
-        record.status = status
-
-        if status == FileStatus.READY:
-            # Check transfer window logic
-            if not self._is_in_transfer_window(record) and not record.override_window:
-                record.status = FileStatus.WAITING_FOR_WINDOW
-                transfer_logger.info("File waiting for window: %s", record.file_name)
-                self.log_message.emit("info", f"Waiting for window: {record.file_name}")
-            else:
-                transfer_logger.info("File ready: %s", record.file_name)
-                self.log_message.emit("info", f"File ready: {record.file_name}")
-
-                # Auto-transfer if monitoring is active
-                if self.is_monitoring and self._current_job and self._current_job.auto_monitor:
-                    self._queue_file(record)
-
-        elif status == FileStatus.PROCESSING:
-            if old_status == FileStatus.DETECTED:
-                record.status = FileStatus.PROCESSING
-
-        elif status == FileStatus.FAILED:
-            record.error_message = "File no longer accessible"
-            self._db.save_record(record)
-
-        self.file_status_changed.emit(record.id, record.status)
-        self._db.save_record(record)
-        self._emit_stats()
-
-    def _queue_file(self, record: TransferRecord) -> None:
-        """Move a READY file into the transfer queue."""
-        # Check for destination conflict first
-        exists, conflicts, src_hash, dst_hash = self._engine.check_destination_conflict(
-            record.source_path, record.destination_path
-        )
-
-        if exists and not conflicts:
-            # Destination matches source — already synchronized
-            record.status = FileStatus.COMPLETED
-            record.source_hash = src_hash
-            record.destination_hash = dst_hash
-            record.verification_passed = True
-            record.transfer_completed = datetime.now()
-            self._db.save_record(record)
-            self.file_status_changed.emit(record.id, record.status)
-            transfer_logger.info("Already synchronized: %s", record.file_name)
-            self.log_message.emit("info", f"Already synchronized: {record.file_name}")
-            self._emit_stats()
-            return
-
-        if exists and conflicts:
-            policy = self._config.overwrite_policy
-            if policy == "ask":
-                record.status = FileStatus.CONFLICT
-                self._db.save_record(record)
-                self.file_status_changed.emit(record.id, record.status)
-                self.conflict_detected.emit(record)
-                self._emit_stats()
-                return
-            elif policy == "skip":
-                record.status = FileStatus.SKIPPED
-                record.error_message = "Destination conflict — skipped by policy"
-                self._db.save_record(record)
-                self.file_status_changed.emit(record.id, record.status)
-                self._emit_stats()
-                return
-            # policy == "overwrite" — continue to queue
-
-        record.status = FileStatus.QUEUED
-        self._db.save_record(record)
-        self.file_status_changed.emit(record.id, record.status)
-        self._emit_stats()
-
-        # Auto-start transfer if not already transferring
-        if not self._is_transferring:
-            self._start_transfer_batch()
-
-    # ──────────────────────────────────────────────
-    # Transfer execution
-    # ──────────────────────────────────────────────
-
-    def _start_transfer_batch(self) -> None:
-        """Start transferring all QUEUED files."""
-        if self._is_transferring:
-            return
-
-        queued = [
-            r for r in self._active_records.values()
-            if r.status == FileStatus.QUEUED
-        ]
-        if not queued:
-            return
-
-        self._is_transferring = True
-
-        self._worker = TransferWorker(queued, self._engine, self._db, self)
-        self._worker.transfer_started.connect(self._on_transfer_started)
-        self._worker.transfer_progress.connect(self._on_transfer_progress)
-        self._worker.transfer_completed.connect(self._on_transfer_completed)
-        self._worker.all_done.connect(self._on_all_transfers_done)
-        self._worker.start()
-
-    def _on_transfer_started(self, record_id: str) -> None:
-        record = self._find_record_by_id(record_id)
-        if record:
-            self.file_status_changed.emit(record_id, FileStatus.TRANSFERRING)
-            self.log_message.emit("info", f"Transferring: {record.file_name}")
-
-    def _on_transfer_progress(
-        self, record_id: str, phase: str, current: int, total: int
-    ) -> None:
-        self.transfer_progress.emit(record_id, phase, current, total)
-
-    def _on_transfer_completed(self, record_id: str, result: TransferResult) -> None:
-        record = self._find_record_by_id(record_id)
-        if not record:
-            return
-
-        self.file_status_changed.emit(record_id, record.status)
-        self.transfer_completed.emit(record_id, result)
-        self._emit_stats()
-
-        if result.success:
-            transfer_logger.info("Transfer completed: %s", record.file_name)
-            self.log_message.emit("info", f"Completed: {record.file_name}")
-            # Clean up safety tracking
-            self._safety.remove_check(record.source_path)
-        else:
-            error_msg = result.error_message or "Unknown error"
-            error_logger.error(
-                "Transfer failed: %s — %s", record.file_name, error_msg
-            )
-            self.log_message.emit(
-                "error", f"Failed: {record.file_name} — {error_msg}"
-            )
-
-            # Schedule retry if under max retries
-            if record.retry_count < self._config.max_retries:
-                record.retry_count += 1
-                record.status = FileStatus.QUEUED
-                record.error_message = (
-                    f"{error_msg} (retry {record.retry_count}/{self._config.max_retries})"
-                )
-                self._db.save_record(record)
-                self.file_status_changed.emit(record_id, record.status)
-                self.log_message.emit(
-                    "warning",
-                    f"Will retry: {record.file_name} "
-                    f"(attempt {record.retry_count}/{self._config.max_retries})",
-                )
-
-    def _on_all_transfers_done(self) -> None:
-        self._is_transferring = False
-        self._emit_stats()
-
-        # Check if more files were queued while transferring
-        queued = [
-            r for r in self._active_records.values()
-            if r.status == FileStatus.QUEUED
-        ]
-        if queued:
-            self._start_transfer_batch()
-
-    def _process_retries(self) -> None:
-        """Re-queue failed files that have retries remaining."""
-        if not self._current_job:
-            return
-        # Retries are handled in _on_transfer_completed
-        # This timer just triggers a new batch if retries were queued
-        if not self._is_transferring:
-            queued = [
-                r for r in self._active_records.values()
-                if r.status == FileStatus.QUEUED
-            ]
-            if queued:
-                self._start_transfer_batch()
-
-    # ──────────────────────────────────────────────
-    # Manual sync
-    # ──────────────────────────────────────────────
-
-    def sync_now(self) -> tuple[list[TransferRecord], list[TransferRecord]]:
-        """
-        Perform a manual synchronization scan.
-
-        Returns:
-            (ready_files, processing_files) — lists of TransferRecords
-            that are ready to transfer and still processing.
-        """
-        if not self._current_job:
-            return [], []
-
-        job = self._current_job
-
-        # Scan the source folder
-        if self._monitor:
-            files = self._monitor.scan_folder()
-        else:
-            source = Path(job.source_folder)
-            if not source.exists():
-                return [], []
-            files = [
-                str(f) for f in source.iterdir()
-                if f.is_file()
-                and not f.name.startswith(".")
-                and not f.name.endswith(self._config.temp_file_suffix)
-            ]
-
-        # Process each file
-        for file_path in files:
-            self._on_file_detected(file_path)
-
-        # Force safety checks
-        self._run_safety_checks()
-
-        # Categorize results
-        ready = []
-        processing = []
-        for record in self._active_records.values():
-            if record.status == FileStatus.READY:
-                ready.append(record)
-            elif record.status in (FileStatus.DETECTED, FileStatus.PROCESSING, FileStatus.WAITING_FOR_WINDOW):
-                processing.append(record)
-
-        return ready, processing
-
-    def transfer_ready_files(self) -> int:
-        """Queue all READY files for transfer. Returns count queued."""
-        count = 0
-        for record in list(self._active_records.values()):
-            if record.status == FileStatus.READY:
-                self._queue_file(record)
-                count += 1
-        return count
-
-    def resolve_conflict(
-        self, record_id: str, resolution: ConflictResolution
-    ) -> None:
-        """Handle a user's conflict resolution decision."""
-        record = self._find_record_by_id(record_id)
-        if not record:
-            return
-
-        if resolution == ConflictResolution.OVERWRITE:
-            record.status = FileStatus.QUEUED
-            self._db.save_record(record)
-            self.file_status_changed.emit(record_id, record.status)
-            if not self._is_transferring:
-                self._start_transfer_batch()
-        elif resolution == ConflictResolution.SKIP:
-            record.status = FileStatus.SKIPPED
-            record.error_message = "Skipped by user (destination conflict)"
-            self._db.save_record(record)
-            self.file_status_changed.emit(record_id, record.status)
-        else:  # CANCEL
-            record.status = FileStatus.READY
-            self._db.save_record(record)
-            self.file_status_changed.emit(record_id, record.status)
-
-        self._emit_stats()
-
-    def force_start(self, record_id: str) -> None:
-        """Manually override transfer window and start immediately."""
-        record = self._find_record_by_id(record_id)
-        if not record:
-            return
-            
-        record.override_window = True
-        if record.status == FileStatus.WAITING_FOR_WINDOW:
-            record.status = FileStatus.READY
-            self._db.save_record(record)
-            self.file_status_changed.emit(record_id, record.status)
-            self._queue_file(record)
-            self._emit_stats()
-
-    # ──────────────────────────────────────────────
-    # Utilities
-    # ──────────────────────────────────────────────
-
-    def _find_record_by_id(self, record_id: str) -> Optional[TransferRecord]:
-        """Find a record by ID in the active records."""
-        for record in self._active_records.values():
-            if record.id == record_id:
-                return record
+        if self._current_job and self._current_job.id in self._controllers:
+            return self._controllers[self._current_job.id]._active_records
+        return {}
+
+    @property
+    def _active_records(self) -> dict[str, TransferRecord]:
+        if self._current_job and self._current_job.id in self._controllers:
+            return self._controllers[self._current_job.id]._active_records
+        return {}
+
+    @property
+    def _worker(self) -> Optional[TransferWorker]:
+        if self._current_job and self._current_job.id in self._controllers:
+            return self._controllers[self._current_job.id]._worker
         return None
 
-    def _emit_stats(self) -> None:
-        """Emit updated statistics."""
-        stats = {}
-        for status in FileStatus:
-            stats[status.value] = 0
-        for record in self._active_records.values():
-            stats[record.status.value] = stats.get(record.status.value, 0) + 1
-        self.stats_updated.emit(stats)
+    @property
+    def is_in_transfer_window(self) -> bool:
+        if self._current_job and self._current_job.id in self._controllers:
+            return self._controllers[self._current_job.id].is_in_transfer_window
+        return True
 
-    def get_all_records(self) -> list[TransferRecord]:
-        """Return all active records."""
-        return list(self._active_records.values())
+    def is_job_monitoring(self, job_id: str) -> bool:
+        ctrl = self._controllers.get(job_id)
+        return ctrl.is_monitoring if ctrl else False
 
-    def get_history(self, limit: int = 500) -> list[TransferRecord]:
-        """Return transfer history from the database."""
-        if self._current_job:
-            return self._db.get_records_by_job(self._current_job.id, limit=limit)
+    def is_job_in_window(self, job_id: str) -> bool:
+        ctrl = self._controllers.get(job_id)
+        return ctrl.is_in_transfer_window if ctrl else True
+
+    def set_job(self, job: TransferJob) -> None:
+        """Set the active workspace job."""
+        self._current_job = job
+        if job.id not in self._controllers:
+            self.reload_jobs()
+        self._emit_stats()
+
+    def start_monitoring(self) -> None:
+        """Start monitoring the active workspace job."""
+        if self._current_job and self._current_job.id in self._controllers:
+            self._controllers[self._current_job.id].start_monitoring()
+
+    def stop_monitoring(self) -> None:
+        """Stop monitoring the active workspace job."""
+        if self._current_job and self._current_job.id in self._controllers:
+            self._controllers[self._current_job.id].stop_monitoring()
+
+    def start_job_monitoring(self, job_id: str) -> None:
+        """Start background monitoring for a specific job."""
+        ctrl = self._controllers.get(job_id)
+        if ctrl:
+            ctrl.start_monitoring()
+
+    def stop_job_monitoring(self, job_id: str) -> None:
+        """Stop background monitoring for a specific job."""
+        ctrl = self._controllers.get(job_id)
+        if ctrl:
+            ctrl.stop_monitoring()
+
+    def start_all_monitoring(self) -> None:
+        """Start background monitoring for all configured jobs."""
+        for ctrl in self._controllers.values():
+            if ctrl.job.enabled:
+                ctrl.start_monitoring()
+
+    def stop_all_monitoring(self) -> None:
+        """Stop background monitoring for all jobs."""
+        for ctrl in self._controllers.values():
+            ctrl.stop_monitoring()
+
+    def sync_now(self) -> tuple[list[TransferRecord], list[TransferRecord]]:
+        """Manual sync for the active workspace job."""
+        if self._current_job and self._current_job.id in self._controllers:
+            return self._controllers[self._current_job.id].sync_now()
+        return [], []
+
+    def sync_job(self, job_id: str) -> tuple[list[TransferRecord], list[TransferRecord]]:
+        """Manual sync for a specific job."""
+        ctrl = self._controllers.get(job_id)
+        if ctrl:
+            return ctrl.sync_now()
+        return [], []
+
+    def transfer_ready_files(self, job_id: Optional[str] = None, override: bool = False) -> int:
+        """Transfer ready files for specified or active job."""
+        jid = job_id or (self._current_job.id if self._current_job else None)
+        if jid and jid in self._controllers:
+            return self._controllers[jid].transfer_ready_files(override=override)
+        return 0
+
+    def force_start(self, record_id: str) -> None:
+        for ctrl in self._controllers.values():
+            if ctrl._find_record_by_id(record_id):
+                ctrl.force_start(record_id)
+                break
+
+    def resolve_conflict(self, record_id: str, resolution: ConflictResolution) -> None:
+        for ctrl in self._controllers.values():
+            rec = ctrl._find_record_by_id(record_id)
+            if rec:
+                if resolution == ConflictResolution.OVERWRITE:
+                    rec.status = FileStatus.QUEUED
+                    rec.error_message = None
+                    self._db.save_record(rec)
+                    ctrl.file_status_changed.emit(ctrl.job.id, rec.id, rec.status)
+                    ctrl._queue_file(rec)
+                elif resolution == ConflictResolution.SKIP:
+                    rec.status = FileStatus.SKIPPED
+                    rec.error_message = "Skipped by user"
+                    self._db.save_record(rec)
+                    ctrl.file_status_changed.emit(ctrl.job.id, rec.id, rec.status)
+                ctrl._emit_stats()
+                break
+
+    def get_all_records(self, job_id: Optional[str] = None) -> list[TransferRecord]:
+        jid = job_id or (self._current_job.id if self._current_job else None)
+        if jid:
+            ctrl = self._controllers.get(jid)
+            if ctrl:
+                return list(ctrl._active_records.values())
+            return self._db.get_active_records(jid)
         return []
 
+    def get_history(self, job_id: Optional[str] = None, limit: int = 100) -> list[TransferRecord]:
+        jid = job_id or (self._current_job.id if self._current_job else None)
+        if jid:
+            return self._db.get_records_by_job(jid, limit=limit)
+        return []
+
+    def _find_record_by_id(self, record_id: str) -> Optional[TransferRecord]:
+        for ctrl in self._controllers.values():
+            rec = ctrl._find_record_by_id(record_id)
+            if rec:
+                return rec
+        return self._db.get_record_by_id(record_id)
+
+    # ──────────────────────────────────────────────
+    # Controller Signal Forwarding
+    # ──────────────────────────────────────────────
+
+    def _on_ctrl_file_detected(self, job_id: str, file_path: str, record: TransferRecord) -> None:
+        if self._current_job and self._current_job.id == job_id:
+            self.file_detected.emit(file_path, record)
+
+    def _on_ctrl_files_detected(self, job_id: str, records: list) -> None:
+        if self._current_job and self._current_job.id == job_id:
+            self.files_detected.emit(records)
+
+    def _on_ctrl_file_status_changed(self, job_id: str, record_id: str, status: FileStatus) -> None:
+        if self._current_job and self._current_job.id == job_id:
+            self.file_status_changed.emit(record_id, status)
+
+    def _on_ctrl_transfer_progress(self, job_id: str, record_id: str, phase: str, cur: int, tot: int) -> None:
+        if self._current_job and self._current_job.id == job_id:
+            self.transfer_progress.emit(record_id, phase, cur, tot)
+
+    def _on_ctrl_transfer_completed(self, job_id: str, record_id: str, result: TransferResult) -> None:
+        if self._current_job and self._current_job.id == job_id:
+            self.transfer_completed.emit(record_id, result)
+
+    def _on_ctrl_stats_updated(self, job_id: str, stats: dict) -> None:
+        if self._current_job and self._current_job.id == job_id:
+            self.stats_updated.emit(stats)
+
+    def _on_ctrl_monitoring_changed(self, job_id: str, is_monitoring: bool) -> None:
+        if self._current_job and self._current_job.id == job_id:
+            self.monitoring_changed.emit(is_monitoring)
+
+    def _on_ctrl_conflict_detected(self, job_id: str, record: TransferRecord) -> None:
+        if self._current_job and self._current_job.id == job_id:
+            self.conflict_detected.emit(record)
+
+    def _on_ctrl_log_message(self, job_id: str, level: str, message: str) -> None:
+        self.log_message.emit(level, message)
+
+    def _emit_stats(self) -> None:
+        if self._current_job:
+            stats = self._db.get_statistics(self._current_job.id)
+            self.stats_updated.emit(stats)
+
     def shutdown(self) -> None:
-        """Clean shutdown — stop monitoring and cancel transfers."""
-        self.stop_monitoring()
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(5000)
-        logger.info("Transfer manager shut down")
-
-    # ──────────────────────────────────────────────
-    # Auto-Cleanup
-    # ──────────────────────────────────────────────
-
-    def _run_auto_cleanup(self) -> None:
-        """Runs the auto-cleanup job to delete old transferred source files on Mondays."""
-        if not self._config.auto_cleanup_enabled or not self._current_job:
-            return
-
-        # Check if it's Monday (0 = Monday, 6 = Sunday)
-        if datetime.now().weekday() != 0:
-            return
-
-        logger.info("Running Monday auto-cleanup...")
-        self.log_message.emit("info", "Starting weekly source cleanup...")
-
-        # Find candidates older than 7 days
-        candidates = self._db.get_cleanup_candidates(self._current_job.id, days=7)
-        deleted_count = 0
-
-        for record in candidates:
-            source_path = Path(record.source_path)
-            dest_path = Path(record.destination_path)
-
-            if not source_path.exists():
-                continue
-
-            # Ensure it actually exists at the destination before deleting the source
-            if dest_path.exists() and dest_path.stat().st_size == record.file_size:
-                try:
-                    source_path.unlink()
-                    deleted_count += 1
-                    logger.info("Auto-cleanup deleted source file: %s", source_path)
-                except OSError as e:
-                    logger.error("Failed to delete source file during cleanup %s: %s", source_path, e)
-
-        if deleted_count > 0:
-            self.log_message.emit("info", f"Auto-cleanup removed {deleted_count} old file(s).")
-
-    # ──────────────────────────────────────────────
-    # Windows & Scheduling
-    # ──────────────────────────────────────────────
-    def _is_in_transfer_window(self, record: TransferRecord) -> bool:
-        """Check if current time is within the allowed transfer window."""
-        if not self._current_job or self._current_job.schedule_mode != "window":
-            return True
-            
-        try:
-            now = datetime.now().time()
-            start_time = datetime.strptime(self._current_job.window_start, "%H:%M").time()
-            end_time = datetime.strptime(self._current_job.window_end, "%H:%M").time()
-            
-            if start_time <= end_time:
-                return start_time <= now <= end_time
-            else:
-                # Crosses midnight
-                return now >= start_time or now <= end_time
-        except ValueError:
-            return True # Fallback if time format is wrong
-            
-    def _check_windows(self) -> None:
-        """Transition WAITING_FOR_WINDOW files to READY if window opened."""
-        if not self._current_job:
-            return
-            
-        now_in_window = self._is_in_transfer_window(None) # record argument not used for job config
-        if not now_in_window:
-            return
-            
-        queued_count = 0
-        for record in list(self._active_records.values()):
-            if record.status == FileStatus.WAITING_FOR_WINDOW:
-                record.status = FileStatus.READY
-                self._db.save_record(record)
-                self.file_status_changed.emit(record.id, record.status)
-                
-                if self.is_monitoring and self._current_job.auto_monitor:
-                    self._queue_file(record)
-                    queued_count += 1
-                    
-        if queued_count > 0:
-            self._emit_stats()
-
-
+        """Stop all monitoring and workers."""
+        self.stop_all_monitoring()

@@ -248,12 +248,50 @@ class DatabaseService:
                     record.error_message,
                     record.retry_count,
                     (
-                        int(record.verification_passed)
-                        if record.verification_passed is not None
-                        else None
+                        record.verification_passed if isinstance(record.verification_passed, int) 
+                        else (int(record.verification_passed) if record.verification_passed is not None else None)
                     ),
-                    int(record.override_window),
+                    (
+                        record.override_window if isinstance(record.override_window, int) 
+                        else int(record.override_window)
+                    ),
                 ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def save_records_batch(self, records: list[TransferRecord]) -> None:
+        """Insert or replace multiple transfer records in a single transaction."""
+        if not records:
+            return
+            
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            
+            data = []
+            for record in records:
+                data.append((
+                    record.id, record.job_id, record.file_name, record.source_path, record.destination_path,
+                    record.file_size, record.source_modified, record.source_hash, record.destination_hash,
+                    record.status.value, self._dt_to_str(record.detected_at),
+                    self._dt_to_str(record.transfer_started), self._dt_to_str(record.transfer_completed),
+                    record.error_message, record.retry_count,
+                    (record.verification_passed if isinstance(record.verification_passed, int) else (int(record.verification_passed) if record.verification_passed is not None else None)),
+                    (record.override_window if isinstance(record.override_window, int) else int(record.override_window))
+                ))
+                
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO transfer_records
+                    (id, job_id, file_name, source_path, destination_path,
+                     file_size, source_modified, source_hash, destination_hash,
+                     status, detected_at, transfer_started, transfer_completed,
+                    error_message, retry_count, verification_passed, override_window)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                data
             )
             conn.commit()
         finally:
@@ -372,8 +410,46 @@ class DatabaseService:
             ).fetchall()
             stats = {s.value: 0 for s in FileStatus}
             for row in rows:
-                stats[row["status"]] = row["cnt"]
+                if row["status"] in stats:
+                    stats[row["status"]] = row["cnt"]
             return stats
+        finally:
+            conn.close()
+
+    def get_global_statistics(self) -> dict[str, int]:
+        """Return aggregate counts of records across all jobs."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT status, COUNT(*) as cnt
+                   FROM transfer_records
+                   GROUP BY status"""
+            ).fetchall()
+            stats = {s.value: 0 for s in FileStatus}
+            for row in rows:
+                if row["status"] in stats:
+                    stats[row["status"]] = row["cnt"]
+            return stats
+        finally:
+            conn.close()
+
+    def get_all_job_statistics(self) -> dict[str, dict[str, int]]:
+        """Return counts of records by status for every job, keyed by job_id."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT job_id, status, COUNT(*) as cnt
+                   FROM transfer_records
+                   GROUP BY job_id, status"""
+            ).fetchall()
+            result: dict[str, dict[str, int]] = {}
+            for row in rows:
+                jid = row["job_id"]
+                if jid not in result:
+                    result[jid] = {s.value: 0 for s in FileStatus}
+                if row["status"] in result[jid]:
+                    result[jid][row["status"]] = row["cnt"]
+            return result
         finally:
             conn.close()
 

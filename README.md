@@ -14,7 +14,9 @@ A desktop application that automates one-way file copying between a source folde
 - **Safe copy strategy** — Copies to a temporary file first, verifies, then renames to the final filename
 - **Duplicate detection** — Already-transferred files are not copied again; modified files are recognized as new versions
 - **Destination conflict handling** — Detects when a destination file differs from the source and prompts the user
+- **Batch Compression** — Can compress queued files into an AES-encrypted ZIP before transferring
 - **Persistent transfer history** — SQLite database survives application restarts
+- **Scheduled Transfer Windows** — Define active transfer windows during specific times
 - **Manual & automatic sync** — Start/stop monitoring or trigger manual synchronization
 - **Retry mechanism** — Failed transfers are retried with configurable attempts and delay
 - **Responsive GUI** — Background workers keep the interface responsive during large file transfers
@@ -152,11 +154,14 @@ The application will:
 5. Check **Enabled** and **Automatic Monitoring** as desired
 6. Click **Save**
 
+**Managing Jobs**: You can switch between jobs using the dropdown on the dashboard. To edit a job, select it and use **Jobs → Edit Transfer Job**. To delete a job entirely (including its transfer history), click the trash can icon next to the job selector on the dashboard.
+
 Example:
 ```
 Job Name:    Local Test Transfer
 Source:      C:\Users\<user>\Documents\FileTransferAutomationSystem\demo\source
 Destination: C:\Users\<user>\Documents\FileTransferAutomationSystem\demo\destination
+Schedule:    Window (08:00 to 18:00)
 ```
 
 ---
@@ -175,6 +180,10 @@ When monitoring is active:
 **Stop monitoring**: Click **"■ Stop Monitoring"**
 
 The periodic reconciliation scan runs every 30 seconds (configurable) to catch any files that were missed by filesystem events.
+
+### Transfer Windows
+If a job is configured with a **Window** schedule mode (e.g., 08:00 to 18:00), files detected outside this window will be marked as `WAITING_FOR_WINDOW` instead of immediately transferring. When the window opens, they are automatically queued and transferred.
+If you need to transfer a waiting file immediately, you can right-click it in the table and select **Transfer Now (Override Window)**.
 
 ---
 
@@ -213,32 +222,43 @@ Immediately before copying begins, the file is re-checked. This prevents copying
 ### File States
 
 ```
-DETECTED     → File found in source folder
-PROCESSING   → File is still being written/modified
-READY        → File is stable and safe to copy
-QUEUED       → File is waiting in the transfer queue
-TRANSFERRING → File is being copied
-VERIFYING    → Copy is being verified (SHA-256)
-COMPLETED    → Transfer successful, verified
-FAILED       → Transfer failed (will retry)
-SKIPPED      → File skipped (duplicate or user choice)
-CONFLICT     → Destination file differs from source
+DETECTED           → File found in source folder
+PROCESSING         → File is still being written/modified
+READY              → File is stable and safe to copy
+WAITING_FOR_WINDOW → Waiting for the scheduled transfer window
+QUEUED             → File is waiting in the transfer queue
+TRANSFERRING       → File is being copied
+COMPRESSING        → File is being compressed into an encrypted ZIP
+VERIFYING          → Copy is being verified (SHA-256)
+COMPLETED          → Transfer successful, verified
+FAILED             → Transfer failed (will retry)
+SKIPPED            → File skipped (duplicate or user choice)
+CONFLICT           → Destination file differs from source
 ```
 
 ---
 
 ## Integrity Verification
 
-After every file copy:
+After every file copy (or batch zip transfer):
 
 1. ✅ Confirm the destination file exists
-2. ✅ Compare file sizes (source vs destination)
+2. ✅ Compare file sizes (source vs destination) if transferring normally.
 3. ✅ Calculate SHA-256 hash of both files
 4. ✅ Compare hashes
 
 Files are read in 64 KB chunks so even multi-gigabyte files never load entirely into RAM.
 
 Only when all checks pass is the transfer marked as **COMPLETED**.
+
+---
+
+## Batch Compression
+
+When `batch_compression_enabled` is set to `true`, the system will gather all files ready to transfer and bundle them into a single AES-encrypted ZIP file before moving them to the destination.
+The ZIP file uses `pyzipper` to provide AES encryption (defaulting to standard AES-256), protecting the contents with the password defined in settings (`zip_password`). 
+
+The generated file follows the pattern `YYYY-MM-DD_HHMMSS.zip` (e.g., `2026-08-19_101304.zip`).
 
 ---
 
@@ -364,6 +384,8 @@ Configuration is stored in `config/config.json`:
 | `automatic_monitoring` | true | Auto-start monitoring on launch |
 | `reconciliation_interval` | 30 | Seconds between full folder scans |
 | `overwrite_policy` | "ask" | How to handle conflicts: "ask", "overwrite", "skip" |
+| `batch_compression_enabled` | false | If true, batch-compresses queued files into a single ZIP before transfer |
+| `zip_password` | "defaultpassword" | Password for AES encryption of ZIP files |
 
 Settings can also be edited via **View → Settings** in the application.
 

@@ -16,6 +16,7 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     Qt,
     Signal,
+    QTimer,
 )
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
@@ -64,26 +65,66 @@ class TransferTableModel(QAbstractTableModel):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._records: list[TransferRecord] = []
+        self._record_idx: dict[str, int] = {}
+        self._pending_updates: dict[int, TransferRecord] = {}
+        self._pending_inserts: list[TransferRecord] = []
+        self._pending_inserts_idx: dict[str, int] = {}
+        
+        self._batch_timer = QTimer(self)
+        self._batch_timer.setInterval(250)
+        self._batch_timer.setSingleShot(True)
+        self._batch_timer.timeout.connect(self._apply_batch)
 
     def set_records(self, records: list[TransferRecord]) -> None:
         """Replace all records and refresh the view."""
+        self._pending_updates.clear()
+        self._pending_inserts.clear()
+        self._pending_inserts_idx.clear()
         self.beginResetModel()
         self._records = list(records)
+        self._record_idx = {r.id: i for i, r in enumerate(self._records)}
         self.endResetModel()
 
     def update_record(self, record: TransferRecord) -> None:
-        """Update a single record in the model."""
-        for i, r in enumerate(self._records):
-            if r.id == record.id:
-                self._records[i] = record
-                top_left = self.index(i, 0)
-                bottom_right = self.index(i, len(_COLUMNS) - 1)
-                self.dataChanged.emit(top_left, bottom_right)
-                return
-        # Record not found — add it
-        self.beginInsertRows(QModelIndex(), len(self._records), len(self._records))
-        self._records.append(record)
-        self.endInsertRows()
+        """Queue a single record update/insert."""
+        # Is it in existing records?
+        if record.id in self._record_idx:
+            i = self._record_idx[record.id]
+            self._pending_updates[i] = record
+            self._batch_timer.start()
+            return
+            
+        # Is it in pending inserts?
+        if record.id in self._pending_inserts_idx:
+            i = self._pending_inserts_idx[record.id]
+            self._pending_inserts[i] = record
+            self._batch_timer.start()
+            return
+                
+        # Otherwise, it's a new insert
+        self._pending_inserts_idx[record.id] = len(self._pending_inserts)
+        self._pending_inserts.append(record)
+        self._batch_timer.start()
+
+    def _apply_batch(self):
+        """Apply all queued updates and inserts in bulk."""
+        if self._pending_updates:
+            # Apply updates
+            for i, r in self._pending_updates.items():
+                self._records[i] = r
+                self.dataChanged.emit(self.index(i, 0), self.index(i, len(_COLUMNS) - 1))
+            self._pending_updates.clear()
+            
+        if self._pending_inserts:
+            # Apply inserts in bulk
+            start_idx = len(self._records)
+            self.beginInsertRows(QModelIndex(), start_idx, start_idx + len(self._pending_inserts) - 1)
+            for r in self._pending_inserts:
+                self._record_idx[r.id] = len(self._records)
+                self._records.append(r)
+            self.endInsertRows()
+            self._pending_inserts.clear()
+            self._pending_inserts_idx.clear()
 
     def get_record(self, row: int) -> Optional[TransferRecord]:
         """Get the record at the given row."""

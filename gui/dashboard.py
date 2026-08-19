@@ -26,8 +26,10 @@ from qfluentwidgets import (
     StrongBodyLabel,
     BodyLabel,
     TitleLabel,
+    TitleLabel,
     SubtitleLabel,
-    ComboBox
+    ComboBox,
+    ToolButton
 )
 
 from core.models import FileStatus, TransferJob, TransferRecord
@@ -80,6 +82,7 @@ class DashboardWidget(QWidget):
     sync_now_requested = Signal()
     force_start_requested = Signal(str)
     job_switched = Signal(str) # job id
+    delete_job_requested = Signal(str) # job id
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -97,10 +100,20 @@ class DashboardWidget(QWidget):
         job_layout.setVerticalSpacing(8)
 
         job_layout.addWidget(StrongBodyLabel("Job:", self._job_group), 0, 0)
+        
+        job_combo_layout = QHBoxLayout()
         self.job_combo = ComboBox(self._job_group)
         self.job_combo.setMinimumWidth(200)
         self.job_combo.currentIndexChanged.connect(self._on_job_combo_changed)
-        job_layout.addWidget(self.job_combo, 0, 1)
+        job_combo_layout.addWidget(self.job_combo)
+        
+        self.btn_delete_job = ToolButton(FluentIcon.DELETE, self._job_group)
+        self.btn_delete_job.setToolTip("Delete selected job")
+        self.btn_delete_job.clicked.connect(self._on_delete_job_clicked)
+        job_combo_layout.addWidget(self.btn_delete_job)
+        job_combo_layout.addStretch(1)
+        
+        job_layout.addLayout(job_combo_layout, 0, 1)
 
         job_layout.addWidget(StrongBodyLabel("Source:", self._job_group), 1, 0)
         self._source_label = BodyLabel("—", self._job_group)
@@ -215,12 +228,30 @@ class DashboardWidget(QWidget):
         job_id = self.job_combo.currentData()
         if job_id:
             self.job_switched.emit(job_id)
+            self.btn_delete_job.setEnabled(True)
+        else:
+            self.btn_delete_job.setEnabled(False)
 
-    def update_monitoring_status(self, is_monitoring: bool) -> None:
+    def _on_delete_job_clicked(self) -> None:
+        job_id = self.job_combo.currentData()
+        if job_id:
+            self.delete_job_requested.emit(job_id)
+
+    def update_monitoring_status(
+        self, is_monitoring: bool, in_window: bool = True, window_info: str = ""
+    ) -> None:
         """Update the monitoring status indicator and button states."""
         if is_monitoring:
-            self._monitor_status_label.setText("ON — MONITORING")
-            self._monitor_status_label.setStyleSheet("color: #107C10; font-weight: bold;")
+            if window_info:
+                if in_window:
+                    self._monitor_status_label.setText(f"ON — MONITORING (Window Active: {window_info})")
+                    self._monitor_status_label.setStyleSheet("color: #107C10; font-weight: bold;")
+                else:
+                    self._monitor_status_label.setText(f"ON — WAITING (Outside Window: {window_info})")
+                    self._monitor_status_label.setStyleSheet("color: #D83B01; font-weight: bold;")
+            else:
+                self._monitor_status_label.setText("ON — MONITORING")
+                self._monitor_status_label.setStyleSheet("color: #107C10; font-weight: bold;")
             self._btn_start.setEnabled(False)
             self._btn_stop.setEnabled(True)
         else:

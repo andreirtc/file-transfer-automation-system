@@ -1,6 +1,7 @@
 # File Transfer Automation System - Dependencies
 PySide6>=6.8
 watchdog>=4.0
+pyminizip>=0.2.6
 
 # Development / Testing
 pytest>=8.0

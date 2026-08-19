@@ -106,7 +106,7 @@ class FileMonitor:
         self._reconcile_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._is_running = False
-        self._known_files: set[str] = set()
+        self._known_files: dict[str, tuple[float, int]] = {}
 
     @property
     def is_running(self) -> bool:
@@ -138,7 +138,7 @@ class FileMonitor:
             temp_suffix=self._temp_suffix,
         )
         self._observer = Observer()
-        self._observer.schedule(handler, str(self._source_folder), recursive=False)
+        self._observer.schedule(handler, str(self._source_folder), recursive=True)
         self._observer.daemon = True
         self._observer.start()
 
@@ -185,7 +185,7 @@ class FileMonitor:
 
         files = []
         try:
-            for item in self._source_folder.iterdir():
+            for item in self._source_folder.rglob('*'):
                 if item.is_file():
                     # Skip temp files and hidden files
                     if item.name.endswith(self._temp_suffix):
@@ -198,6 +198,17 @@ class FileMonitor:
 
         return files
 
+    def _scan_folder_metadata(self) -> dict[str, tuple[float, int]]:
+        """Return a mapping of file path -> (mtime, size) for reconciliation."""
+        metadata = {}
+        for path_str in self.scan_folder():
+            try:
+                st = Path(path_str).stat()
+                metadata[path_str] = (st.st_mtime, st.st_size)
+            except OSError:
+                metadata[path_str] = (0.0, 0)
+        return metadata
+
     def _reconciliation_loop(self) -> None:
         """Periodically scan the folder to catch missed events."""
         while not self._stop_event.is_set():
@@ -206,13 +217,19 @@ class FileMonitor:
                 break
 
             try:
-                current_files = set(self.scan_folder())
-                # Detect new files that weren't previously known
-                new_files = current_files - self._known_files
-                self._known_files = current_files
+                current_meta = self._scan_folder_metadata()
+                changed_files = []
 
-                for file_path in new_files:
-                    logger.info("Reconciliation found: %s", Path(file_path).name)
+                for file_path, (mtime, size) in current_meta.items():
+                    if file_path not in self._known_files:
+                        changed_files.append(file_path)
+                    elif self._known_files[file_path] != (mtime, size):
+                        changed_files.append(file_path)
+
+                self._known_files = current_meta
+
+                for file_path in changed_files:
+                    logger.info("Reconciliation found/changed: %s", Path(file_path).name)
                     try:
                         self._on_file_detected(file_path)
                     except Exception:
@@ -223,4 +240,4 @@ class FileMonitor:
 
     def update_known_files(self) -> None:
         """Refresh the set of known files (e.g., after startup)."""
-        self._known_files = set(self.scan_folder())
+        self._known_files = self._scan_folder_metadata()

@@ -35,7 +35,10 @@ from qfluentwidgets import (
     TableWidget,
     PlainTextEdit,
     SimpleCardWidget,
-    SwitchButton
+    SimpleCardWidget,
+    SwitchButton,
+    LineEdit,
+    PasswordLineEdit
 )
 
 from core.models import ConflictResolution, FileStatus, SyncAction, TransferRecord
@@ -331,6 +334,18 @@ class SettingsDialog(MessageBoxBase):
         self._auto_cleanup.setChecked(config.auto_cleanup_enabled)
         form.addRow(BodyLabel("Source Cleanup:", self), self._auto_cleanup)
 
+        # Batch Compression
+        self._batch_compression = SwitchButton("Batch Compression", self)
+        self._batch_compression.setOnText("Enabled (Zip queued files together)")
+        self._batch_compression.setOffText("Disabled")
+        self._batch_compression.setChecked(config.batch_compression_enabled)
+        form.addRow(BodyLabel("Compression:", self), self._batch_compression)
+
+        # Zip Password
+        self._zip_password = PasswordLineEdit(self)
+        self._zip_password.setText(config.zip_password)
+        form.addRow(BodyLabel("Zip Password:", self), self._zip_password)
+
         self.viewLayout.addLayout(form)
 
     def validate(self) -> bool:
@@ -342,6 +357,8 @@ class SettingsDialog(MessageBoxBase):
         self._config.set("overwrite_policy", self._overwrite_policy.currentData())
         self._config.set("network_drive_mode", self._network_mode.isChecked())
         self._config.set("auto_cleanup_enabled", self._auto_cleanup.isChecked())
+        self._config.set("batch_compression_enabled", self._batch_compression.isChecked())
+        self._config.set("zip_password", self._zip_password.text())
         self._config.save()
         return True
 

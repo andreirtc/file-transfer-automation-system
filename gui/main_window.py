@@ -1,10 +1,8 @@
 """
-Main window for the File Transfer Automation System.
+Main application window for the File Transfer Automation System.
 
-The top-level MSFluentWindow that contains:
-- Left navigation bar
-- Dashboard as the central widget
-- Status messages
+Integrates the Main Dashboard (multi-job concurrent control & notification feed) and the
+Job Workspace (detailed file-level transfer workspace) with the TransferManager backend.
 """
 
 from __future__ import annotations
@@ -12,37 +10,32 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QCloseEvent, QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QCloseEvent
+from PySide6.QtWidgets import QWidget
 
 from qfluentwidgets import (
     MSFluentWindow,
-    NavigationItemPosition,
     FluentIcon,
-    MessageBox,
+    NavigationItemPosition,
     InfoBar,
     InfoBarPosition,
+    MessageBox,
 )
 
-from core.models import (
-    ConflictResolution,
-    FileStatus,
-    SyncAction,
-    TransferJob,
-    TransferRecord,
-    TransferResult,
-)
+from core.models import FileStatus, TransferJob, TransferRecord, TransferResult
 from core.transfer_manager import TransferManager
+from gui.main_dashboard import MainDashboardWidget
 from gui.dashboard import DashboardWidget
+from gui.job_dialog import JobDialog
 from gui.dialogs import (
     ConflictDialog,
     LogViewerDialog,
     ProcessingWarningDialog,
     SettingsDialog,
+    SyncAction,
     TransferHistoryDialog,
 )
-from gui.job_dialog import JobDialog
 from gui.help_dialog import UserDocumentationDialog
 from services.configuration_service import ConfigurationService
 from services.database_service import DatabaseService
@@ -54,7 +47,9 @@ class MainWindow(MSFluentWindow):
     """
     Main application window using Fluent Design.
 
-    Connects the DashboardWidget (GUI) with the TransferManager (backend).
+    Features a Main Dashboard (all jobs overview & live activity feed)
+    and a Job Workspace (detailed file-level monitoring table).
+    All enabled jobs run concurrently in the background.
     """
 
     def __init__(
@@ -67,53 +62,62 @@ class MainWindow(MSFluentWindow):
         self._config = config
         self._db = db
 
-        # Create the transfer manager
+        # Create the central multi-job transfer manager
         self._manager = TransferManager(config, db, self)
 
-        # Setup UI
+        # Setup Window
         self.setWindowTitle("File Transfer Automation System")
-        self.resize(1200, 800)
+        self.resize(1280, 850)
 
-        # Remove the default title bar text if desired, or keep it.
-        # self.titleBar.titleLabel.hide()
+        # Create primary interfaces
+        self._main_dashboard = MainDashboardWidget(self)
+        self._main_dashboard.setObjectName("MainDashboardInterface")
 
         self._dashboard = DashboardWidget(self)
-        self._dashboard.setObjectName("DashboardInterface")
+        self._dashboard.setObjectName("JobWorkspaceInterface")
 
         self._setup_navigation()
         self._connect_signals()
 
-        # Load existing job on startup
-        self._load_initial_job()
+        # Load existing jobs on startup and start concurrent background monitoring
+        self._load_initial_jobs()
 
     # ──────────────────────────────────────────────
     # Navigation Interface
     # ──────────────────────────────────────────────
 
     def _setup_navigation(self):
-        # Add the main dashboard
+        # 1. Main Dashboard (Multi-Job Overview & Feed)
         self.addSubInterface(
-            self._dashboard,
+            self._main_dashboard,
             FluentIcon.HOME,
-            "Dashboard",
-            position=NavigationItemPosition.TOP
+            "Main Dashboard",
+            position=NavigationItemPosition.TOP,
         )
 
-        # Add Job Actions
+        # 2. Detailed Job Workspace
+        self.addSubInterface(
+            self._dashboard,
+            FluentIcon.FOLDER,
+            "Job Workspace",
+            position=NavigationItemPosition.TOP,
+        )
+
+        # Job Actions
         self.navigationInterface.addItem(
             routeKey="addJob",
             icon=FluentIcon.ADD,
             text="Add Job",
             onClick=self._on_add_job,
-            position=NavigationItemPosition.SCROLL
+            position=NavigationItemPosition.SCROLL,
         )
-        
+
         self.navigationInterface.addItem(
             routeKey="editJob",
             icon=FluentIcon.EDIT,
             text="Edit Job",
             onClick=self._on_edit_job,
-            position=NavigationItemPosition.SCROLL
+            position=NavigationItemPosition.SCROLL,
         )
 
         self.navigationInterface.addItem(
@@ -121,7 +125,7 @@ class MainWindow(MSFluentWindow):
             icon=FluentIcon.HISTORY,
             text="Transfer History",
             onClick=self._on_view_history,
-            position=NavigationItemPosition.SCROLL
+            position=NavigationItemPosition.SCROLL,
         )
 
         # Bottom Actions
@@ -130,7 +134,7 @@ class MainWindow(MSFluentWindow):
             icon=FluentIcon.DOCUMENT,
             text="View Logs",
             onClick=self._on_view_logs,
-            position=NavigationItemPosition.BOTTOM
+            position=NavigationItemPosition.BOTTOM,
         )
 
         self.navigationInterface.addItem(
@@ -138,15 +142,15 @@ class MainWindow(MSFluentWindow):
             icon=FluentIcon.SETTING,
             text="Settings",
             onClick=self._on_settings,
-            position=NavigationItemPosition.BOTTOM
+            position=NavigationItemPosition.BOTTOM,
         )
-        
+
         self.navigationInterface.addItem(
             routeKey="about",
             icon=FluentIcon.INFO,
             text="About",
             onClick=self._on_about,
-            position=NavigationItemPosition.BOTTOM
+            position=NavigationItemPosition.BOTTOM,
         )
 
         self.navigationInterface.addItem(
@@ -154,7 +158,7 @@ class MainWindow(MSFluentWindow):
             icon=FluentIcon.HELP,
             text="User Guide",
             onClick=self._on_help,
-            position=NavigationItemPosition.BOTTOM
+            position=NavigationItemPosition.BOTTOM,
         )
 
     # ──────────────────────────────────────────────
@@ -162,139 +166,266 @@ class MainWindow(MSFluentWindow):
     # ──────────────────────────────────────────────
 
     def _connect_signals(self):
-        # Dashboard → actions
+        # Main Dashboard → Actions
+        self._main_dashboard.add_job_requested.connect(self._on_add_job)
+        self._main_dashboard.edit_job_requested.connect(self._on_edit_job_by_id)
+        self._main_dashboard.delete_job_requested.connect(self._on_delete_job)
+        self._main_dashboard.sync_job_requested.connect(self._on_sync_job_by_id)
+        self._main_dashboard.toggle_job_monitoring_requested.connect(self._on_toggle_job_monitoring)
+        self._main_dashboard.start_all_requested.connect(self._on_start_all_monitoring)
+        self._main_dashboard.stop_all_requested.connect(self._on_stop_all_monitoring)
+        self._main_dashboard.open_workspace_requested.connect(self._on_open_workspace_for_job)
+        self._main_dashboard.refresh_all_requested.connect(self._refresh_all_ui)
+
+        # Job Workspace Dashboard → actions
         self._dashboard.start_monitoring_requested.connect(self._on_start_monitoring)
         self._dashboard.stop_monitoring_requested.connect(self._on_stop_monitoring)
         self._dashboard.sync_now_requested.connect(self._on_sync_now)
         self._dashboard.force_start_requested.connect(self._manager.force_start)
         self._dashboard.job_switched.connect(self._on_job_switched)
+        self._dashboard.delete_job_requested.connect(self._on_delete_job)
 
-        # Manager → dashboard
+        # Manager → UI updates
         self._manager.file_detected.connect(self._on_file_detected)
+        self._manager.files_detected.connect(self._on_files_detected)
         self._manager.file_status_changed.connect(self._on_file_status_changed)
         self._manager.transfer_completed.connect(self._on_transfer_completed)
-        self._manager.stats_updated.connect(self._dashboard.update_statistics)
+        self._manager.stats_updated.connect(self._on_stats_updated)
         self._manager.monitoring_changed.connect(self._on_monitoring_changed)
         self._manager.conflict_detected.connect(self._on_conflict_detected)
         self._manager.log_message.connect(self._on_log_message)
 
+        # UI timer for real-time window & multi-job status updates
+        self._ui_window_timer = QTimer(self)
+        self._ui_window_timer.setInterval(2000)
+        self._ui_window_timer.timeout.connect(self._update_all_status_indicators)
+        self._ui_window_timer.start()
+
     # ──────────────────────────────────────────────
-    # Initial setup
+    # Initial setup & Refresh
     # ──────────────────────────────────────────────
 
-    def _load_initial_job(self):
-        """Load the first available job, or prompt to create one."""
+    def _load_initial_jobs(self):
+        """Load jobs on startup, start concurrent monitoring for all enabled jobs."""
         jobs = self._db.get_jobs()
-        if jobs:
-            job = jobs[0]
-            self._dashboard.update_job_list(jobs, job.id)
-            self._manager.set_job(job)
-            self._dashboard.update_job_info(job)
+        self._manager.reload_jobs()
 
-            # Load active records into the table
+        if jobs:
+            active_job = jobs[0]
+            self._manager.set_job(active_job)
+            self._refresh_all_ui(active_job_id=active_job.id)
+
             records = self._manager.get_all_records()
             self._dashboard.set_records(records)
 
-            logger.info("Loaded job: '%s'", job.name)
+            logger.info("Loaded %d transfer jobs on startup", len(jobs))
 
-            # Auto-start monitoring if configured
-            if job.auto_monitor and self._config.automatic_monitoring:
-                QTimer.singleShot(500, self._on_start_monitoring)
+            # Auto-start monitoring for all enabled jobs with auto_monitor=True
+            if self._config.automatic_monitoring:
+                for job in jobs:
+                    if job.enabled and job.auto_monitor:
+                        self._manager.start_job_monitoring(job.id)
+                self._update_all_status_indicators()
         else:
             logger.info("No jobs found — prompting user to create one")
+            self._refresh_all_ui()
+            self._dashboard.update_job_list([], None)
+            self._dashboard.update_job_info(None)
+            self._dashboard.set_records([])
+
+    def _refresh_all_ui(self, active_job_id: Optional[str] = None):
+        """Refresh job lists and statistics on both Main Dashboard and Workspace."""
+        jobs = self._db.get_jobs()
+        all_stats = self._db.get_all_job_statistics()
+        current_job = self._manager.current_job
+        cur_id = active_job_id or (current_job.id if current_job else (jobs[0].id if jobs else None))
+
+        mon_states = {j.id: self._manager.is_job_monitoring(j.id) for j in jobs}
+        win_states = {j.id: self._manager.is_job_in_window(j.id) for j in jobs}
+
+        self._main_dashboard.set_jobs(
+            jobs=jobs,
+            job_stats=all_stats,
+            monitoring_states=mon_states,
+            window_states=win_states,
+        )
+
+        if jobs and cur_id:
+            self._dashboard.update_job_list(jobs, cur_id)
+            if current_job:
+                self._dashboard.update_job_info(current_job)
+                stats = self._db.get_statistics(current_job.id)
+                self._dashboard.update_statistics(stats)
+
+        self._update_all_status_indicators()
+
+    def _update_all_status_indicators(self):
+        """Update live status badges on Main Dashboard and Job Workspace."""
+        jobs = self._db.get_jobs()
+        for job in jobs:
+            is_mon = self._manager.is_job_monitoring(job.id)
+            in_win = self._manager.is_job_in_window(job.id)
+            self._main_dashboard.update_job_status(job.id, is_mon, in_win)
+
+        # Workspace status
+        cur_job = self._manager.current_job
+        if cur_job:
+            is_mon = self._manager.is_monitoring
+            in_win = self._manager.is_in_transfer_window
+            win_info = f"{cur_job.window_start} - {cur_job.window_end}" if cur_job.schedule_mode == "window" else ""
+            self._dashboard.update_monitoring_status(is_mon, in_win, win_info)
 
     # ──────────────────────────────────────────────
-    # Action handlers
+    # Navigation & Workspace helpers
+    # ──────────────────────────────────────────────
+
+    def _on_open_workspace_for_job(self, job_id: str):
+        """Switch active job and navigate to the Job Workspace tab."""
+        self._on_job_switched(job_id)
+        self.switchTo(self._dashboard)
+
+    # ──────────────────────────────────────────────
+    # Action handlers (Add, Edit, Delete, Sync)
     # ──────────────────────────────────────────────
 
     def _on_add_job(self):
+        """Add a new job and automatically start background monitoring."""
         dialog = JobDialog(parent=self)
         if dialog.exec() == JobDialog.DialogCode.Accepted:
             job = dialog.job
             self._db.save_job(job)
-            
-            jobs = self._db.get_jobs()
-            self._dashboard.update_job_list(jobs, job.id)
-            
+
+            self._manager.reload_jobs()
             self._manager.set_job(job)
-            self._dashboard.update_job_info(job)
             self._dashboard.set_records([])
+
+            # Automatically start monitoring for this job
+            self._manager.start_job_monitoring(job.id)
+            self._refresh_all_ui(active_job_id=job.id)
+
             logger.info("Created new job: '%s'", job.name)
-            self._on_log_message("INFO", f"Job '{job.name}' created")
+            self._on_log_message("SUCCESS", f"Job '{job.name}' created and monitoring started")
 
     def _on_edit_job(self):
+        """Edit currently active job and restart monitoring on Save."""
         job = self._manager.current_job
         if not job:
             msg = MessageBox("No Job", "No job is currently active.", self)
             msg.exec()
             return
+        self._on_edit_job_by_id(job.id)
 
-        was_monitoring = self._manager.is_monitoring
-        if was_monitoring:
-            self._manager.stop_monitoring()
+    def _on_edit_job_by_id(self, job_id: str):
+        """Edit specified job and automatically start monitoring on Save."""
+        job = self._db.get_job(job_id)
+        if not job:
+            return
+
+        self._manager.stop_job_monitoring(job_id)
 
         dialog = JobDialog(job=job, parent=self)
         if dialog.exec() == JobDialog.DialogCode.Accepted:
             updated_job = dialog.job
             self._db.save_job(updated_job)
-            
-            jobs = self._db.get_jobs()
-            self._dashboard.update_job_list(jobs, updated_job.id)
-            
+
+            self._manager.reload_jobs()
             self._manager.set_job(updated_job)
             self._dashboard.update_job_info(updated_job)
-            logger.info("Updated job: '%s'", updated_job.name)
 
-            if was_monitoring:
-                self._on_start_monitoring()
+            # Automatically start monitoring on Save
+            self._manager.start_job_monitoring(updated_job.id)
+
+            records = self._manager.get_history(job_id=updated_job.id, limit=100)
+            active = self._manager.get_all_records(job_id=updated_job.id)
+            merged = {r.id: r for r in records}
+            merged.update({r.id: r for r in active})
+            self._dashboard.set_records(list(merged.values()))
+
+            self._refresh_all_ui(active_job_id=updated_job.id)
+
+            logger.info("Updated job: '%s'", updated_job.name)
+            self._on_log_message("SUCCESS", f"Job '{updated_job.name}' saved and monitoring started")
 
     def _on_job_switched(self, job_id: str):
-        """Handle when the user selects a different job from the dropdown."""
+        """Handle switching the active job view in the workspace."""
         jobs = self._db.get_jobs()
         job = next((j for j in jobs if j.id == job_id), None)
         if not job:
             return
-            
-        was_monitoring = self._manager.is_monitoring
-        if was_monitoring:
-            self._manager.stop_monitoring()
-            
+
         self._manager.set_job(job)
         self._dashboard.update_job_info(job)
-        
-        # Load active records for the new job
-        records = self._manager.get_all_records()
-        self._dashboard.set_records(records)
-        
-        self._on_log_message("INFO", f"Switched to job: {job.name}")
-        
-        # Auto-start monitoring if configured
-        if job.auto_monitor and self._config.automatic_monitoring:
-            QTimer.singleShot(500, self._on_start_monitoring)
 
+        records = self._manager.get_history(job_id=job.id, limit=100)
+        active = self._manager.get_all_records(job_id=job.id)
+        merged = {r.id: r for r in records}
+        merged.update({r.id: r for r in active})
+        self._dashboard.set_records(list(merged.values()))
+
+        self._refresh_all_ui(active_job_id=job.id)
+
+    def _on_delete_job(self, job_id: str):
+        job = self._db.get_job(job_id)
+        job_name = job.name if job else "this job"
+
+        msg = MessageBox(
+            "Delete Job",
+            f"Are you sure you want to delete '{job_name}' and all its transfer history?\nThis cannot be undone.",
+            self,
+        )
+        if msg.exec():
+            self._manager.stop_job_monitoring(job_id)
+            self._db.delete_job(job_id)
+            self._manager.reload_jobs()
+
+            self._on_log_message("SUCCESS", f"Job '{job_name}' deleted")
+            self._load_initial_jobs()
+
+    def _on_toggle_job_monitoring(self, job_id: str):
+        """Toggle monitoring for a specific job directly from the card button."""
+        if self._manager.is_job_monitoring(job_id):
+            self._manager.stop_job_monitoring(job_id)
+        else:
+            self._manager.start_job_monitoring(job_id)
+        self._update_all_status_indicators()
+
+    def _on_start_all_monitoring(self):
+        """Start monitoring all enabled jobs."""
+        self._manager.start_all_monitoring()
+        self._update_all_status_indicators()
+        self._on_log_message("SUCCESS", "Started monitoring all enabled jobs")
+
+    def _on_stop_all_monitoring(self):
+        """Stop monitoring all jobs."""
+        self._manager.stop_all_monitoring()
+        self._update_all_status_indicators()
+        self._on_log_message("INFO", "Stopped monitoring all jobs")
 
     def _on_start_monitoring(self):
+        """Start monitoring current workspace job."""
         if not self._manager.current_job:
             msg = MessageBox("No Job", "Please create a transfer job first.", self)
             msg.exec()
             return
         self._manager.start_monitoring()
+        self._update_all_status_indicators()
 
     def _on_stop_monitoring(self):
+        """Stop monitoring current workspace job."""
         self._manager.stop_monitoring()
+        self._update_all_status_indicators()
 
-    def _on_sync_now(self):
-        if not self._manager.current_job:
-            msg = MessageBox("No Job", "Please create a transfer job first.", self)
-            msg.exec()
+    def _on_sync_job_by_id(self, job_id: str):
+        """Sync a specific job directly from the Main Dashboard card."""
+        ctrl = self._manager.get_controller(job_id)
+        if not ctrl:
             return
 
-        self._on_log_message("INFO", "Scanning source folder...")
+        self._on_log_message("INFO", f"Scanning source folder for '{ctrl.job.name}'...")
+        ready, processing = ctrl.sync_now()
 
-        ready, processing = self._manager.sync_now()
-
-        # Refresh table with current records
-        self._dashboard.set_records(self._manager.get_all_records())
+        if self._manager.current_job and self._manager.current_job.id == job_id:
+            self._dashboard.set_records(self._manager.get_all_records(job_id))
 
         if processing:
             dialog = ProcessingWarningDialog(
@@ -302,21 +433,24 @@ class MainWindow(MSFluentWindow):
                 ready_count=len(ready),
                 parent=self,
             )
-            dialog.exec()
-            action = dialog.result_action
-
-            if action == SyncAction.TRANSFER_READY:
-                count = self._manager.transfer_ready_files()
-                self._on_log_message("INFO", f"Queued {count} file(s) for transfer")
-            elif action == SyncAction.WAIT_ALL:
-                self._on_log_message("INFO", "Waiting for all files to become ready...")
-            else:
-                self._on_log_message("INFO", "Sync cancelled")
+            if dialog.exec() and dialog.result_action == SyncAction.TRANSFER_READY:
+                count = ctrl.transfer_ready_files()
+                self._on_log_message("INFO", f"Queued {count} file(s) for transfer in '{ctrl.job.name}'")
         elif ready:
-            count = self._manager.transfer_ready_files()
-            self._on_log_message("INFO", f"Queued {count} file(s) for transfer")
+            count = ctrl.transfer_ready_files()
+            self._on_log_message("INFO", f"Queued {count} file(s) for transfer in '{ctrl.job.name}'")
         else:
-            self._on_log_message("INFO", "No new files to transfer")
+            self._on_log_message("INFO", f"No new files to transfer for '{ctrl.job.name}'")
+
+        self._refresh_all_ui()
+
+    def _on_sync_now(self):
+        """Sync active workspace job."""
+        if not self._manager.current_job:
+            msg = MessageBox("No Job", "Please create a transfer job first.", self)
+            msg.exec()
+            return
+        self._on_sync_job_by_id(self._manager.current_job.id)
 
     def _on_settings(self):
         dialog = SettingsDialog(self._config, self)
@@ -334,14 +468,16 @@ class MainWindow(MSFluentWindow):
     def _on_about(self):
         msg = MessageBox(
             "About File Transfer Automation System",
-            "Version 1.0.0 — Local Prototype\n\n"
+            "Version 1.0.0 — Production Edition\n\n"
             "Automated one-way file transfer with:\n"
-            "- File safety detection (incomplete file protection)\n"
+            "- Multi-job concurrent background monitoring\n"
+            "- Central Main Dashboard & detailed Job Workspace\n"
+            "- File safety lock & stability detection\n"
             "- SHA-256 integrity verification\n"
-            "- Persistent transfer history\n"
-            "- Automatic and manual sync modes\n\n"
-            "Files are always copied, never moved. Source files are never modified or deleted.",
-            self
+            "- Scheduled Transfer Windows & Batch Compression (ZipCrypto)\n"
+            "- Persistent SQLite transfer history\n\n"
+            "Files are safely copied and verified. Source files remain intact.",
+            self,
         )
         msg.exec()
 
@@ -356,27 +492,35 @@ class MainWindow(MSFluentWindow):
     def _on_file_detected(self, file_path: str, record: TransferRecord):
         self._dashboard.update_record(record)
 
+    def _on_files_detected(self, records: list):
+        for record in records:
+            self._dashboard.update_record(record)
+
     def _on_file_status_changed(self, record_id: str, status: FileStatus):
-        # Find record and update the table
         record = self._manager._find_record_by_id(record_id)
         if record:
             self._dashboard.update_record(record)
+
+    def _on_stats_updated(self, stats: dict):
+        self._dashboard.update_statistics(stats)
+        if self._manager.current_job:
+            self._main_dashboard.update_job_counts(self._manager.current_job.id, stats)
 
     def _on_transfer_completed(self, record_id: str, result: TransferResult):
         record = self._manager._find_record_by_id(record_id)
         if record:
             self._dashboard.update_record(record)
+            job = self._db.get_job(record.job_id)
+            job_name = job.name if job else "Job"
             if result.success:
-                self._on_log_message("SUCCESS", f"Transferred: {record.file_name}")
+                self._on_log_message("SUCCESS", f"[{job_name}] Transferred: {record.file_name}")
             else:
-                self._on_log_message("ERROR", f"Failed: {record.file_name} — {result.error_message}")
+                self._on_log_message("ERROR", f"[{job_name}] Failed: {record.file_name} — {result.error_message}")
+
+        self._refresh_all_ui()
 
     def _on_monitoring_changed(self, is_monitoring: bool):
-        self._dashboard.update_monitoring_status(is_monitoring)
-        if is_monitoring:
-            self._on_log_message("INFO", "Monitoring active")
-        else:
-            self._on_log_message("INFO", "Monitoring stopped")
+        self._update_all_status_indicators()
 
     def _on_conflict_detected(self, record: TransferRecord):
         dialog = ConflictDialog(record, self)
@@ -385,7 +529,10 @@ class MainWindow(MSFluentWindow):
         self._manager.resolve_conflict(record.id, resolution)
 
     def _on_log_message(self, level: str, message: str):
-        if level == "INFO":
+        job_name = self._manager.current_job.name if self._manager.current_job else "System"
+        self._main_dashboard.add_activity_event(level, message, job_name)
+
+        if level.upper() == "INFO":
             InfoBar.info(
                 title="Info",
                 content=message,
@@ -393,9 +540,9 @@ class MainWindow(MSFluentWindow):
                 isClosable=True,
                 position=InfoBarPosition.TOP_RIGHT,
                 duration=3000,
-                parent=self
+                parent=self,
             )
-        elif level == "SUCCESS":
+        elif level.upper() in ("SUCCESS", "COMPLETED"):
             InfoBar.success(
                 title="Success",
                 content=message,
@@ -403,9 +550,9 @@ class MainWindow(MSFluentWindow):
                 isClosable=True,
                 position=InfoBarPosition.TOP_RIGHT,
                 duration=3000,
-                parent=self
+                parent=self,
             )
-        elif level == "ERROR":
+        elif level.upper() in ("ERROR", "FAILED"):
             InfoBar.error(
                 title="Error",
                 content=message,
@@ -413,9 +560,9 @@ class MainWindow(MSFluentWindow):
                 isClosable=True,
                 position=InfoBarPosition.TOP_RIGHT,
                 duration=5000,
-                parent=self
+                parent=self,
             )
-        elif level == "WARNING":
+        elif level.upper() in ("WARNING", "CONFLICT"):
             InfoBar.warning(
                 title="Warning",
                 content=message,
@@ -423,7 +570,7 @@ class MainWindow(MSFluentWindow):
                 isClosable=True,
                 position=InfoBarPosition.TOP_RIGHT,
                 duration=4000,
-                parent=self
+                parent=self,
             )
 
     # ──────────────────────────────────────────────

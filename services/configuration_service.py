@@ -31,6 +31,8 @@ _DEFAULTS: dict[str, Any] = {
     "log_backup_count": 3,               # number of rotated log backups
     "network_drive_mode": False,         # optimize for shared network drives
     "auto_cleanup_enabled": False,       # enable automatic deletion of source files
+    "batch_compression_enabled": True,   # compress all queued files into a single zip
+    "zip_password": "password123",       # default password for zip files
 }
 
 
@@ -173,6 +175,14 @@ class ConfigurationService:
     @property
     def auto_cleanup_enabled(self) -> bool:
         return self.get_bool("auto_cleanup_enabled", False)
+
+    @property
+    def batch_compression_enabled(self) -> bool:
+        return self.get_bool("batch_compression_enabled", True)
+
+    @property
+    def zip_password(self) -> str:
+        return self.get_str("zip_password", "password123")
 
     @property
     def all_settings(self) -> dict[str, Any]:

@@ -185,3 +185,53 @@ class TestTransferManagerIntegration:
         assert result.success is False
         assert record.status == FileStatus.FAILED
         # No exception raised — graceful failure
+
+    def test_concurrent_multi_job_monitoring(self, tmp_path, test_db, config):
+        """Verify that multiple jobs are monitored and managed concurrently."""
+        from core.transfer_manager import TransferManager
+
+        # Create 3 distinct jobs: easy, medium, hard
+        job_easy = TransferJob(
+            name="Easy Job",
+            source_folder=str(tmp_path / "easy_src"),
+            destination_folder=str(tmp_path / "easy_dst"),
+            enabled=True,
+            auto_monitor=True,
+        )
+        job_med = TransferJob(
+            name="Medium Job",
+            source_folder=str(tmp_path / "med_src"),
+            destination_folder=str(tmp_path / "med_dst"),
+            enabled=True,
+            auto_monitor=True,
+        )
+        job_hard = TransferJob(
+            name="Hard Job",
+            source_folder=str(tmp_path / "hard_src"),
+            destination_folder=str(tmp_path / "hard_dst"),
+            enabled=True,
+            auto_monitor=True,
+        )
+        test_db.save_job(job_easy)
+        test_db.save_job(job_med)
+        test_db.save_job(job_hard)
+
+        manager = TransferManager(config, test_db)
+        assert len(manager._controllers) == 3
+
+        # Start all jobs
+        manager.start_all_monitoring()
+        assert manager.is_job_monitoring(job_easy.id) is True
+        assert manager.is_job_monitoring(job_med.id) is True
+        assert manager.is_job_monitoring(job_hard.id) is True
+
+        # Stop one job
+        manager.stop_job_monitoring(job_med.id)
+        assert manager.is_job_monitoring(job_easy.id) is True
+        assert manager.is_job_monitoring(job_med.id) is False
+        assert manager.is_job_monitoring(job_hard.id) is True
+
+        # Clean shutdown
+        manager.stop_all_monitoring()
+        assert manager.is_job_monitoring(job_easy.id) is False
+        assert manager.is_job_monitoring(job_hard.id) is False
