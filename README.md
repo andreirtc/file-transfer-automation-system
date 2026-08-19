@@ -1,427 +1,176 @@
 # File Transfer Automation System
 
-A desktop application that automates one-way file copying between a source folder and a destination folder, with robust incomplete-file detection, integrity verification, and persistent transfer history.
+An enterprise-grade desktop application that automates secure, one-way file copying between source and destination directories with active stability checks, end-to-end SHA-256 cryptographic verification, sequential queue dispatching, batch ZipCrypto archive encryption, dual-verification source cleanup, and persistent SQLite transfer history.
 
-**This is a local prototype** designed to demonstrate that automated file transfer between source and destination locations is feasible while preventing unsafe transfers of files that are still being written.
-
----
-
-## Features
-
-- **Automatic file detection** — Monitors source folders using OS-native filesystem events (watchdog)
-- **Incomplete file protection** — Never copies files that are still being downloaded, written, or modified
-- **SHA-256 integrity verification** — Every transferred file is verified by comparing cryptographic hashes
-- **Safe copy strategy** — Copies to a temporary file first, verifies, then renames to the final filename
-- **Duplicate detection** — Already-transferred files are not copied again; modified files are recognized as new versions
-- **Destination conflict handling** — Detects when a destination file differs from the source and prompts the user
-- **Batch Compression** — Can compress queued files into an AES-encrypted ZIP before transferring
-- **Persistent transfer history** — SQLite database survives application restarts
-- **Scheduled Transfer Windows** — Define active transfer windows during specific times
-- **Manual & automatic sync** — Start/stop monitoring or trigger manual synchronization
-- **Retry mechanism** — Failed transfers are retried with configurable attempts and delay
-- **Responsive GUI** — Background workers keep the interface responsive during large file transfers
-- **Detailed logging** — Separate log files for application events, transfers, and errors
+Designed with a Windows 11 Fluent interface for high-throughput server backups, network share synchronization, and unattended scheduled batch transfers.
 
 ---
 
-## Architecture
+## Key Features
+
+- **Concurrent Multi-Job Monitoring** — Simultaneously monitors multiple source folders using OS-native filesystem events (`watchdog`) and scheduled reconciliation polling.
+- **Sequential Global Transfer Queue** — Dispatches file batches across multiple jobs through a central FIFO queue to eliminate disk thrashing, lock contention, and OS thread freezes.
+- **Live Real-Time Progress Bars** — Provides dynamic visual progress bars on each job overview card, streaming real-time status across compression, copy throughput (`XX MB / YY MB`), and SHA-256 hash checks.
+- **Incomplete File Protection** — Actively watches file sizes and Windows locks across consecutive stability checks to guarantee incomplete or growing files are never transferred prematurely.
+- **Scheduled Transfer Windows** — Supports continuous mode and scheduled transfer windows (e.g., overnight backups). Files accumulate safely throughout the day and automatically transfer in a consolidated batch at the configured window end-time.
+- **Batch ZipCrypto Archive Encryption** — Automatically bundles queued files into password-protected ZIP archives compatible with native Windows Explorer (no third-party extraction tools required).
+- **Isolated Compression Subprocess** — Runs archive compression in an isolated child process to ensure zero Python Global Interpreter Lock (GIL) contention and 100% smooth UI responsiveness.
+- **Dual-Verified Source File Retention** — Configurable retention policy (1 to 365 days) that safely deletes source files only after confirming successful transfer and destination existence.
+- **End-to-End SHA-256 Verification** — Every transferred file is verified by computing and matching full cryptographic checksums before marking as completed.
+- **Safe Copy Strategy** — Writes to hidden temporary files first (`.filename.transfer_tmp`), verifies integrity, and atomically commits to the final destination path.
+- **Duplicate & Modification Detection** — Recognizes already-transferred files to prevent redundant transfers while detecting modified files as new versions.
+- **Persistent SQLite Database** — Stores all transfer jobs and file-level history across application restarts with automatic crash-state recovery.
+- **Standalone Windows Executable (`.exe`)** — Ships with 1-click compiler (`build_exe.bat`) and portable distribution (`dist/FileTransferAutomationSystem/`) requiring zero Python installation on target machines.
+
+---
+
+## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    PySide6 GUI                          │
-│  ┌──────────┐ ┌──────────────┐ ┌──────────────────────┐│
-│  │ Dashboard │ │ Transfer     │ │ Dialogs              ││
-│  │ (stats,   │ │ Table        │ │ (conflict, warnings, ││
-│  │  controls)│ │ (file list)  │ │  settings, logs)     ││
-│  └─────┬─────┘ └──────┬───────┘ └──────────┬───────────┘│
-└────────┼──────────────┼────────────────────┼────────────┘
-         │              │                    │
-         └──────────────┼────────────────────┘
-                        │  Qt Signals
-         ┌──────────────┴───────────────┐
-         │      Transfer Manager        │
-         │  (orchestrator / coordinator) │
-         └──┬───────┬────────┬──────┬───┘
-            │       │        │      │
-   ┌────────┴┐ ┌───┴─────┐ ┌┴─────┐┌┴──────────┐
-   │File     │ │File     │ │Trans-││Integrity  │
-   │Monitor  │ │Safety   │ │fer   ││Verifier   │
-   │(watchdog│ │Checker  │ │Engine││(SHA-256)  │
-   │+recon)  │ │(stable?)│ │(copy)││           │
-   └─────────┘ └─────────┘ └──────┘└───────────┘
-                        │
-         ┌──────────────┴───────────────┐
-         │         Services             │
-         │  ┌──────────┐ ┌───────────┐  │
-         │  │ Database  │ │ Config    │  │
-         │  │ (SQLite)  │ │ (JSON)    │  │
-         │  └──────────┘ └───────────┘  │
-         └──────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   Windows 11 Fluent UI (PySide6)                        │
+│  ┌─────────────────────────┐  ┌──────────────────────────────────────┐  │
+│  │ Main Dashboard          │  │ Job Workspace                        │  │
+│  │ (KPIs, Multi-Job Cards, │  │ (File-Level Transfer Table, Filter,  │  │
+│  │  Live Activity Feed)    │  │  Retry & Window Override Actions)    │  │
+│  └────────────┬────────────┘  └──────────────────┬───────────────────┘  │
+└───────────────┼──────────────────────────────────┼──────────────────────┘
+                │ Qt Multi-Job Signals & Live Bus  │
+┌───────────────┴──────────────────────────────────┴──────────────────────┐
+│                    Transfer Manager (Central Orchestrator)              │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ Sequential Global Transfer Queue (FIFO Batch Execution)           │  │
+│  └─────────────────────────────────┬─────────────────────────────────┘  │
+│                                    │ Dispatches Active Job              │
+│  ┌─────────────────────────────────┴─────────────────────────────────┐  │
+│  │ TransferWorker (QThread)                                          │  │
+│  │  ├── Isolated Compression Worker (Subprocess: ZipCrypto)          │  │
+│  │  ├── Transfer Engine (Chunked Copy + Temp Commit)                 │  │
+│  │  └── Integrity Verifier (Chunked SHA-256 Hash Verification)       │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │
+┌────────────────────────────────────┴────────────────────────────────────┐
+│ Multi-Job Controllers: Concurrent Watchdog Monitors + Safety Checkers   │
+│ Persistence: SQLite Database (WAL) + JSON Configuration Service         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
-
-### Module Responsibilities
-
-| Module | Responsibility |
-|--------|---------------|
-| `core/transfer_manager.py` | Central orchestrator — coordinates all components |
-| `core/file_monitor.py` | Watches source folder for new/changed files |
-| `core/file_safety.py` | Determines if files are safe to copy (not still being written) |
-| `core/transfer_engine.py` | Performs safe copy with temp file + atomic rename |
-| `core/integrity.py` | SHA-256 hashing and post-transfer verification |
-| `core/models.py` | Data models, enums, and type definitions |
-| `services/database_service.py` | SQLite persistence for jobs and transfer history |
-| `services/configuration_service.py` | JSON configuration loading and saving |
-| `services/logging_service.py` | Structured logging with rotating file handlers |
-| `gui/main_window.py` | Main application window with menu, toolbar, status bar |
-| `gui/dashboard.py` | Dashboard with stats cards, warning banner, transfer table |
-| `gui/transfer_table.py` | Sortable/filterable file transfer status table |
-| `gui/job_dialog.py` | Create/edit transfer job dialog |
-| `gui/dialogs.py` | Processing warning, conflict, settings, log viewer dialogs |
-
-### Design Decisions
-
-1. **Copy, never move** — Source files are always preserved. The system never deletes source files.
-2. **Safe copy strategy** — Files are copied to `.filename.transfer_tmp` first, then renamed after verification. This prevents partial files from appearing under the real filename.
-3. **Connection-per-call database** — Each database method opens and closes its own SQLite connection, making it safe to call from any thread without external locking.
-4. **Single-threaded transfer queue** — Files are transferred one at a time to avoid race conditions. The architecture supports future parallel transfers.
-5. **Conflicts pause in automatic mode** — When auto-monitoring detects a destination conflict, the file is flagged in the dashboard rather than blocking with a modal dialog.
 
 ---
 
 ## Requirements
 
-- **Python 3.12+** (tested on 3.13)
-- **Windows** (tested on Windows 10/11)
-- **PySide6** >= 6.8 (Qt for Python)
-- **watchdog** >= 4.0 (filesystem monitoring)
-- **pytest** >= 8.0 (testing, development only)
+- **Operating System:** Windows 10 or Windows 11 (64-bit)
+- **Python Runtime:** Python 3.10+ (tested on Python 3.12 and 3.13)
+- **Core Dependencies:**
+  - `PySide6` >= 6.8 (Qt6 GUI Framework)
+  - `PySide6-Fluent-Widgets` >= 1.11.3 (Windows 11 Fluent Design System)
+  - `watchdog` >= 4.0 (OS Filesystem Event Monitoring)
+  - `pyminizip` >= 0.2.6 (Standard ZipCrypto Archive Compression)
+  - `Pillow` >= 10.0 (High-Resolution Icon Rendering)
+  - `pyinstaller` >= 6.0 (Standalone Binary Compilation)
+  - `pytest` >= 8.0 (Automated Test Suite)
 
 ---
 
-## Installation
+## Quick Start & Installation
 
-1. **Clone or download** the project:
-   ```
-   cd C:\Users\<your_user>\Documents
-   git clone <repository_url> FileTransferAutomationSystem
-   cd FileTransferAutomationSystem
-   ```
+### Option 1: Running Standalone Executable (No Python Required)
+1. Copy the `dist/FileTransferAutomationSystem/` folder to the target PC.
+2. Double-click **`FileTransferAutomationSystem.exe`**.
 
-2. **Create a virtual environment**:
-   ```
-   python -m venv .venv
-   ```
+### Option 2: 1-Click Environment Setup & Launch
+1. Clone or extract the project repository.
+2. Double-click **`setup.bat`** (automatically builds `.venv` and installs all dependencies).
+3. Double-click **`run_app.bat`** to launch the application.
 
-3. **Activate the virtual environment**:
-   ```
-   .venv\Scripts\activate
-   ```
+### Option 3: Manual Python Execution
+```powershell
+# Create virtual environment
+python -m venv .venv
+.venv\Scripts\activate
 
-4. **Install dependencies**:
-   ```
-   pip install -r requirements.txt
-   ```
+# Install dependencies
+pip install -r requirements.txt
 
----
-
-## Running the Application
-
-```
-.venv\Scripts\python.exe app.py
-```
-
-Or with the venv activated:
-```
+# Launch application
 python app.py
 ```
 
-The application will:
-1. Initialize logging (creates `logs/` directory)
-2. Load configuration from `config/config.json`
-3. Initialize the SQLite database (creates `database/transfer_history.db`)
-4. Open the main window
-5. Load any previously configured transfer job
-6. Auto-start monitoring if configured
-
 ---
 
-## Configuring a Transfer Job
+## Standalone Binary Compilation
 
-1. Click **"+ Add Job"** in the toolbar (or **Jobs → Add Transfer Job**)
-2. Enter a **Job Name** (e.g., "Local Test Transfer")
-3. Click **Browse** to select the **Source Folder**
-4. Click **Browse** to select the **Destination Folder**
-5. Check **Enabled** and **Automatic Monitoring** as desired
-6. Click **Save**
+To compile a fresh Windows executable with embedded application icons and dependencies:
 
-**Managing Jobs**: You can switch between jobs using the dropdown on the dashboard. To edit a job, select it and use **Jobs → Edit Transfer Job**. To delete a job entirely (including its transfer history), click the trash can icon next to the job selector on the dashboard.
-
-Example:
+```powershell
+# Double-click build_exe.bat or run:
+.\build_exe.bat
 ```
-Job Name:    Local Test Transfer
-Source:      C:\Users\<user>\Documents\FileTransferAutomationSystem\demo\source
-Destination: C:\Users\<user>\Documents\FileTransferAutomationSystem\demo\destination
-Schedule:    Window (08:00 to 18:00)
+
+The compiled binary distribution will be generated in:
+```
+dist/FileTransferAutomationSystem/
+  ├── FileTransferAutomationSystem.exe
+  └── _internal/
 ```
 
 ---
 
-## Automatic Monitoring
+## Execution States Reference
 
-When monitoring is active:
-
-1. The system watches the source folder for new files
-2. New files are detected and enter the safety check pipeline
-3. Files are checked for size stability, modification time, and accessibility
-4. Once confirmed safe, files are automatically copied and verified
-5. Transfer history is recorded in the database
-
-**Start monitoring**: Click **"▶ Start Monitoring"**
-**Stop monitoring**: Click **"■ Stop Monitoring"**
-
-The periodic reconciliation scan runs every 30 seconds (configurable) to catch any files that were missed by filesystem events.
-
-### Transfer Windows
-If a job is configured with a **Window** schedule mode (e.g., 08:00 to 18:00), files detected outside this window will be marked as `WAITING_FOR_WINDOW` instead of immediately transferring. When the window opens, they are automatically queued and transferred.
-If you need to transfer a waiting file immediately, you can right-click it in the table and select **Transfer Now (Override Window)**.
+| State Badge | Execution Behavior |
+| :--- | :--- |
+| **`TRANSFERRING`** | Active byte transfer, archive compression, or SHA-256 checksum verification in progress. |
+| **`QUEUED (IN LINE)`** | Files are ready and waiting in the Sequential FIFO Queue for the active transfer to finish. |
+| **`MONITORING`** | File watcher is active and listening for filesystem events. |
+| **`WAITING (OUTSIDE WINDOW)`** | Files are stabilized and holding until the configured window end-time. |
+| **`IDLE / STOPPED`** | Monitoring is inactive or paused by the user. |
 
 ---
 
-## Manual Synchronization
+## Configuration Settings
 
-Click **"🔄 SYNC NOW"** to perform a manual sync:
+Configuration values are stored in `config/config.json` and accessible via the in-app **Settings** dialog:
 
-1. The system scans the source folder
-2. Identifies new/changed files
-3. Checks file safety
-4. If any files are still being processed, shows a warning dialog:
-   - **Transfer Ready Files** — Copy only the safe files
-   - **Wait for All Files** — Don't copy anything yet
-   - **Cancel** — Cancel the sync operation
-5. Ready files are transferred and verified
-6. Results are shown in the dashboard
-
----
-
-## File Safety Mechanism
-
-The system uses a multi-check approach to ensure files are safe to copy:
-
-### 1. Size Stability
-The file size is recorded and checked at intervals (default: 5 seconds). The file must remain unchanged for a configurable number of consecutive checks (default: 2).
-
-### 2. Modification Time
-The file's last-modified timestamp is tracked. Changes reset the stability counter.
-
-### 3. File Accessibility
-The system attempts to open the file for reading. Files locked by other processes (e.g., a browser downloading) will fail this check.
-
-### 4. Final Pre-Copy Check
-Immediately before copying begins, the file is re-checked. This prevents copying a file that changed between becoming "READY" and the actual copy operation.
-
-### File States
-
-```
-DETECTED           → File found in source folder
-PROCESSING         → File is still being written/modified
-READY              → File is stable and safe to copy
-WAITING_FOR_WINDOW → Waiting for the scheduled transfer window
-QUEUED             → File is waiting in the transfer queue
-TRANSFERRING       → File is being copied
-COMPRESSING        → File is being compressed into an encrypted ZIP
-VERIFYING          → Copy is being verified (SHA-256)
-COMPLETED          → Transfer successful, verified
-FAILED             → Transfer failed (will retry)
-SKIPPED            → File skipped (duplicate or user choice)
-CONFLICT           → Destination file differs from source
-```
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `stability_check_interval` | `5` | Seconds between file stability checks. |
+| `required_stable_checks` | `2` | Number of consecutive unchanged checks required for `READY` status. |
+| `max_retries` | `3` | Maximum retry attempts for failed transfers. |
+| `retry_delay` | `10` | Delay in seconds between retry attempts. |
+| `hash_algorithm` | `"sha256"` | Cryptographic hashing algorithm for verification. |
+| `hash_chunk_size` | `65536` | Chunk size (bytes) for streaming file reads (64 KB). |
+| `automatic_monitoring` | `true` | Auto-starts monitoring on application launch. |
+| `reconciliation_interval` | `30` | Seconds between full folder reconciliation scans. |
+| `overwrite_policy` | `"ask"` | Conflict resolution policy: `"ask"`, `"overwrite"`, or `"skip"`. |
+| `network_drive_mode` | `false` | Optimizes polling parameters for shared network drives / UNC paths. |
+| `auto_cleanup_enabled` | `false` | Enables scheduled dual-verified deletion of old source files. |
+| `auto_cleanup_days` | `7` | Retention period in days before transferred source files are eligible for cleanup. |
+| `batch_compression_enabled` | `true` | Consolidates queued files into a password-protected ZIP archive. |
+| `zip_password` | `"password123"` | Default password for encrypted zip archives. |
 
 ---
 
-## Integrity Verification
+## Automated Test Suite
 
-After every file copy (or batch zip transfer):
+The project includes an extensive test suite covering safety checks, hashing, compression, database CRUD, sequential queue dispatching, and UI progress tracking.
 
-1. ✅ Confirm the destination file exists
-2. ✅ Compare file sizes (source vs destination) if transferring normally.
-3. ✅ Calculate SHA-256 hash of both files
-4. ✅ Compare hashes
-
-Files are read in 64 KB chunks so even multi-gigabyte files never load entirely into RAM.
-
-Only when all checks pass is the transfer marked as **COMPLETED**.
-
----
-
-## Batch Compression
-
-When `batch_compression_enabled` is set to `true`, the system will gather all files ready to transfer and bundle them into a single AES-encrypted ZIP file before moving them to the destination.
-The ZIP file uses `pyzipper` to provide AES encryption (defaulting to standard AES-256), protecting the contents with the password defined in settings (`zip_password`). 
-
-The generated file follows the pattern `YYYY-MM-DD_HHMMSS.zip` (e.g., `2026-08-19_101304.zip`).
-
----
-
-## Error Handling
-
-The system gracefully handles:
-
-- Source folder doesn't exist → Creates it or warns
-- Destination folder doesn't exist → Creates it automatically
-- Permission denied → Marks as FAILED with message
-- File becomes unavailable during transfer → Cleans up temp file
-- Disk full → Marks as FAILED, cleans up temp file
-- Hash verification failure → Removes partial copy
-- Application crash → Stale states are cleaned up on restart
-- Filesystem watcher failure → Reconciliation scan continues working
-
-One failed file never crashes the entire application.
-
-### Retry Mechanism
-
-Failed transfers are automatically retried:
-- Default: 3 attempts with 10-second delay
-- Configurable in Settings
-- After max retries, the file stays as FAILED for manual review
-
----
-
-## Database
-
-Transfer history is stored in `database/transfer_history.db` (SQLite).
-
-**Tables:**
-- `transfer_jobs` — Job configurations (name, source, destination, enabled)
-- `transfer_records` — Individual file transfer history (status, hashes, timestamps, errors)
-
-**Persistence:** Data survives application restarts. Previously transferred files are recognized and not re-copied.
-
-**Modified file detection:** If a source file changes (different size or modification time), it is recognized as a new version and transferred again.
-
----
-
-## Testing
-
-### Run All Tests
-```
+Run the test suite via `pytest`:
+```powershell
 .venv\Scripts\python.exe -m pytest tests/ -v
 ```
 
-### Test Coverage
-
-| Test File | What It Tests |
-|-----------|--------------|
-| `test_file_safety.py` | File stability detection, growing files, accessibility |
-| `test_integrity.py` | SHA-256 hashing, file comparison, transfer verification |
-| `test_transfer_engine.py` | Safe copy, source preservation, conflict detection |
-| `test_database.py` | CRUD, duplicate detection, persistence, statistics |
-| `test_transfer_manager.py` | Full pipeline integration, error handling |
-
-**48 automated tests** covering file safety, integrity, transfers, database, and integration.
+**56 automated tests passing**:
+- `tests/test_compression.py`: Batch compression, window end triggering, sequential FIFO queue execution, and UI progress bar updates.
+- `tests/test_file_safety.py`: Stability detection, growing file handling, lock checking, and preflight verification.
+- `tests/test_integrity.py`: SHA-256 deterministic hashing, corruption detection, and chunked verification.
+- `tests/test_transfer_engine.py`: Safe copy, atomic temp rename, destination creation, and conflict handling.
+- `tests/test_database.py`: Job persistence, transfer records, history queries, and stale-state cleanup.
+- `tests/test_transfer_manager.py`: Full pipeline integration and concurrent multi-job monitoring.
 
 ---
 
-## Demo Procedure
+## License
 
-### Setup
-
-Run the demo script:
-```
-.venv\Scripts\python.exe demo/create_test_files.py
-```
-
-Choose option **1** to create demo directories.
-
-### Test 1 — Normal File Transfer
-
-1. Start the application: `.venv\Scripts\python.exe app.py`
-2. Create a job pointing to `demo/source` and `demo/destination`
-3. Start monitoring
-4. In the demo script, choose option **2** (create small file)
-5. Watch the dashboard: `DETECTED → READY → TRANSFERRING → VERIFYING → COMPLETED`
-
-### Test 2 — Large/In-Progress File
-
-1. In a separate terminal, run the demo script and choose option **4** (simulate growing file)
-2. The application should show the file as **PROCESSING**
-3. After the script finishes writing (~20 seconds), the file should become **READY**
-4. If auto-monitoring is on, it will be transferred automatically
-
-### Test 3 — Manual Sync While Processing
-
-1. Have both a ready file and a growing file in source
-2. Click **SYNC NOW**
-3. The warning dialog should appear with 3 options
-4. Choose **Transfer Ready Files** — only the ready file transfers
-
-### Test 4 — Duplicate Detection
-
-1. Run sync again after a successful transfer
-2. Already-transferred files should be recognized
-3. No unnecessary copies are made
-
-### Test 5 — Integrity / Conflict
-
-1. Modify a file in `demo/destination` manually (e.g., edit it in Notepad)
-2. Run sync
-3. The **Destination Conflict** dialog should appear
-4. Choose Overwrite, Skip, or Cancel
-
----
-
-## Configuration
-
-Configuration is stored in `config/config.json`:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `stability_check_interval` | 5 | Seconds between file stability checks |
-| `required_stable_checks` | 2 | Consecutive stable checks required for READY |
-| `max_retries` | 3 | Maximum retry attempts for failed transfers |
-| `retry_delay` | 10 | Seconds between retry attempts |
-| `hash_algorithm` | "sha256" | Hash algorithm for integrity verification |
-| `hash_chunk_size` | 65536 | Bytes per chunk when hashing (64 KB) |
-| `automatic_monitoring` | true | Auto-start monitoring on launch |
-| `reconciliation_interval` | 30 | Seconds between full folder scans |
-| `overwrite_policy` | "ask" | How to handle conflicts: "ask", "overwrite", "skip" |
-| `batch_compression_enabled` | false | If true, batch-compresses queued files into a single ZIP before transfer |
-| `zip_password` | "defaultpassword" | Password for AES encryption of ZIP files |
-
-Settings can also be edited via **View → Settings** in the application.
-
----
-
-## Future Network-Drive Deployment
-
-The system is designed so that local paths can be replaced by network paths:
-
-```
-Current (local):
-  Source:      C:\Users\User\Downloads\TestSource
-  Destination: C:\Users\User\Desktop\TestDestination
-
-Future (network):
-  Source:      \\SERVER\SharedFolder\Source
-  Destination: \\SERVER\SharedFolder\Destination
-```
-
-The transfer engine works with generic `pathlib.Path` objects and does not assume any specific drive or path format. The configuration stores paths as strings that can point to any accessible location.
-
-**Considerations for network deployment:**
-- Watchdog may have limitations with UNC paths on some Windows versions
-- The reconciliation scan provides a reliable fallback
-- Network latency may require increasing stability check intervals
-- Authentication/credentials are not handled in this prototype
-
----
-
-## Known Limitations
-
-1. **Single job focus** — The GUI focuses on one job at a time, though the database supports multiple jobs
-2. **No parallel transfers** — Files are transferred one at a time (safe default; architecture supports future parallel transfers)
-3. **No recursive folder monitoring** — Only files directly in the source folder are monitored (subdirectories are ignored)
-4. **File locking detection** — Windows file locking behavior varies between applications; the accessibility check catches most cases but not all
-5. **No network authentication** — The prototype does not handle network drive credentials
-6. **No drag-and-drop** — Files must be placed in the source folder through normal file operations
-7. **Hash performance** — SHA-256 verification on very large files (10+ GB) may take noticeable time
-8. **Watchdog on network drives** — OS-level filesystem events may not fire reliably on network shares; the reconciliation scan mitigates this
+Enterprise Internal Tool — All rights reserved.
