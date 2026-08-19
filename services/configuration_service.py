@@ -10,9 +10,17 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+import sys
 from typing import Any
 
 logger = logging.getLogger("app")
+
+
+def get_app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
 
 # Default configuration values — used when config.json is missing or incomplete
 _DEFAULTS: dict[str, Any] = {
@@ -31,6 +39,7 @@ _DEFAULTS: dict[str, Any] = {
     "log_backup_count": 3,               # number of rotated log backups
     "network_drive_mode": False,         # optimize for shared network drives
     "auto_cleanup_enabled": False,       # enable automatic deletion of source files
+    "auto_cleanup_days": 7,              # days to retain source files after completed transfer before auto-cleanup
     "batch_compression_enabled": True,   # compress all queued files into a single zip
     "zip_password": "password123",       # default password for zip files
 }
@@ -46,8 +55,7 @@ class ConfigurationService:
 
     def __init__(self, config_path: str | Path | None = None):
         if config_path is None:
-            # Default: config/config.json relative to project root
-            self._path = Path(__file__).resolve().parent.parent / "config" / "config.json"
+            self._path = get_app_dir() / "config" / "config.json"
         else:
             self._path = Path(config_path)
 
@@ -175,6 +183,10 @@ class ConfigurationService:
     @property
     def auto_cleanup_enabled(self) -> bool:
         return self.get_bool("auto_cleanup_enabled", False)
+
+    @property
+    def auto_cleanup_days(self) -> int:
+        return self.get_int("auto_cleanup_days", 7)
 
     @property
     def batch_compression_enabled(self) -> bool:

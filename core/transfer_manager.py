@@ -1,24 +1,27 @@
 """
-Transfer manager — the central multi-job orchestrator for the File Transfer Automation System.
+Transfer manager — the central multi-job orchestrator with Sequential Global Transfer Queue.
 
-Coordinates all components:
-- JobController: manages a single job's background monitor, safety checker, and schedule
-- TransferManager: central multi-job registry orchestrating all active jobs concurrently
-- TransferWorker: background QThread worker handling batch compression (ZipCrypto) and safe transfer
-- DatabaseService: persists transfer history and job configs
-- ConfigurationService: provides global settings
-
-All enabled jobs run concurrently in the background regardless of active UI navigation.
+Coordinates:
+- JobController: manages individual job background monitoring and file stability checking
+- TransferManager: central multi-job registry with a Global FIFO Transfer Queue ensuring
+  jobs transfer sequentially (one at a time) to prevent disk saturation, lock contention,
+  and missed window end-time triggers
+- TransferWorker: background QThread worker handling batch ZipCrypto compression and safe copy
+- DatabaseService: persists transfer records and configurations
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -47,8 +50,16 @@ transfer_logger = logging.getLogger("transfer")
 error_logger = logging.getLogger("error")
 
 
+@dataclass
+class JobBatchRequest:
+    """A batch transfer request queued for sequential execution."""
+    job_id: str
+    records: list[TransferRecord]
+    created_at: datetime = datetime.now()
+
+
 class TransferWorker(QThread):
-    """Background worker that processes the transfer queue."""
+    """Background worker that executes batch compression and transfer for a single job."""
 
     transfer_started = Signal(str)                  # record_id
     transfer_progress = Signal(str, str, int, int)  # record_id, phase, current, total
@@ -108,11 +119,10 @@ class TransferWorker(QThread):
                 self.transfer_started.emit(record.id)
 
             password = self._config.zip_password if self._config.zip_password else None
-
             job = self._job
             source_folder = job.source_folder if job else None
 
-            # Format zip filename: YYYY-MM-DD_<time>.zip
+            # Format zip filename: YYYY-MM-DD_<window_start_or_time>.zip
             date_str = datetime.now().strftime("%Y-%m-%d")
             if job and job.schedule_mode == "window" and job.window_start:
                 clean_ws = job.window_start.replace(":", "").strip()
@@ -156,7 +166,7 @@ class TransferWorker(QThread):
                     break
                 src_path = Path(record.source_path)
                 if not src_path.exists():
-                    logger.error(f"Source file missing: {src_path}")
+                    logger.error("Source file missing: %s", src_path)
                     record.status = FileStatus.FAILED
                     record.error_message = "Source file missing"
                     self._db.save_record(record)
@@ -196,17 +206,74 @@ class TransferWorker(QThread):
                 except OSError:
                     pass
 
-            # Create standard ZipCrypto encrypted ZIP
-            pyminizip.compress_multiple(
-                src_paths_for_zip,
-                prefixes_for_zip,
-                temp_zip_path,
-                password,
-                4,
-            )
+            for record in successful_records:
+                self.transfer_progress.emit(record.id, "compressing", 10, 100)
+
+            # Compress using isolated child process with native standard ZipCrypto encryption
+            # Running in an isolated subprocess prevents Python GIL locking on the GUI thread
+            cfg_data = {
+                "src_paths": src_paths_for_zip,
+                "prefixes": prefixes_for_zip,
+                "zip_path": temp_zip_path,
+                "password": password,
+                "compression_level": 4,
+            }
+
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json", encoding="utf-8") as f_cfg:
+                json.dump(cfg_data, f_cfg)
+                cfg_path = f_cfg.name
+
+            try:
+                creationflags = 0
+                if sys.platform == "win32":
+                    creationflags = subprocess.CREATE_NO_WINDOW
+
+                if getattr(sys, "frozen", False):
+                    worker_cmd = [sys.executable, "--compression-worker", cfg_path]
+                    work_cwd = str(Path(sys.executable).parent)
+                else:
+                    worker_cmd = [sys.executable, "-u", "-m", "core.compression_worker", cfg_path]
+                    work_cwd = str(Path(__file__).resolve().parent.parent)
+
+                proc = subprocess.Popen(
+                    worker_cmd,
+                    creationflags=creationflags,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=work_cwd,
+                    text=True,
+                    bufsize=1,
+                )
+                total_files = len(src_paths_for_zip)
+                while proc.poll() is None:
+                    if self._cancel_requested:
+                        proc.kill()
+                        break
+                    line = proc.stdout.readline()
+                    if line:
+                        line_str = line.strip()
+                        if line_str.startswith("PROGRESS:"):
+                            try:
+                                count = int(line_str.split(":", 1)[1])
+                                for r in successful_records:
+                                    self.transfer_progress.emit(r.id, "compressing", count, total_files)
+                            except (ValueError, IndexError):
+                                pass
+                    else:
+                        self.msleep(50)
+
+                stdout_rest, stderr = proc.communicate()
+                if proc.returncode != 0 and not self._cancel_requested:
+                    raise RuntimeError(f"Compression failed: {stderr}")
+            finally:
+                if os.path.exists(cfg_path):
+                    try:
+                        os.remove(cfg_path)
+                    except OSError:
+                        pass
 
             for record in successful_records:
-                self.transfer_progress.emit(record.id, "compressing", 100, 100)
+                self.transfer_progress.emit(record.id, "compressing", total_files, total_files)
 
             valid_records = successful_records
             first_record = valid_records[0]
@@ -222,9 +289,15 @@ class TransferWorker(QThread):
                 status=FileStatus.QUEUED,
             )
 
+            last_emit_time = 0.0
+
             def progress_cb(phase: str, current: int, total: int) -> None:
-                for r in valid_records:
-                    self.transfer_progress.emit(r.id, phase, current, total)
+                nonlocal last_emit_time
+                now = time.time()
+                if current == total or (now - last_emit_time) >= 0.1:
+                    last_emit_time = now
+                    for r in valid_records:
+                        self.transfer_progress.emit(r.id, phase, current, total)
 
             result = self._engine.transfer_file(zip_record, progress_cb)
 
@@ -254,8 +327,8 @@ class TransferWorker(QThread):
 
 class JobController(QObject):
     """
-    Background controller managing an individual transfer job's pipeline:
-    monitoring, file safety checks, schedule checking, and queue dispatching.
+    Background controller managing an individual transfer job's monitoring,
+    file safety checking, and schedule detection.
     """
 
     file_detected = Signal(str, str, object)          # job_id, file_path, TransferRecord
@@ -267,6 +340,7 @@ class JobController(QObject):
     monitoring_changed = Signal(str, bool)            # job_id, is_monitoring
     conflict_detected = Signal(str, object)           # job_id, TransferRecord
     log_message = Signal(str, str, str)               # job_id, level, message
+    enqueue_requested = Signal(str, list)             # job_id, list[TransferRecord]
 
     def __init__(
         self,
@@ -296,30 +370,24 @@ class JobController(QObject):
 
         self._monitor: Optional[FileMonitor] = None
         self._active_records: dict[str, TransferRecord] = {}
-        self._worker: Optional[TransferWorker] = None
-        self._is_transferring = False
         self._last_window_executed_minute: Optional[str] = None
 
-        # Safety timer
+        # Periodic timers
         self._safety_timer = QTimer(self)
         self._safety_timer.timeout.connect(self._run_safety_checks)
 
-        # Window check timer (runs every 3 seconds)
         self._window_timer = QTimer(self)
         self._window_timer.timeout.connect(self._check_windows)
-        self._window_timer.setInterval(3000)
+        self._window_timer.setInterval(2000)
 
-        # Retry timer
         self._retry_timer = QTimer(self)
         self._retry_timer.timeout.connect(self._process_retries)
         self._retry_timer.setInterval(self._config.retry_delay * 1000)
 
-        # Cleanup timer
         self._cleanup_timer = QTimer(self)
         self._cleanup_timer.timeout.connect(self._run_auto_cleanup)
         self._cleanup_timer.setInterval(3600 * 1000)
 
-        # Load active records from DB
         self._load_active_records()
 
     def _load_active_records(self) -> None:
@@ -333,7 +401,7 @@ class JobController(QObject):
 
     @property
     def is_in_transfer_window(self) -> bool:
-        """Check if current time is within the allowed transfer window."""
+        """Evaluate whether the current time is within the configured window."""
         if self.job.schedule_mode != "window":
             return True
         try:
@@ -349,7 +417,7 @@ class JobController(QObject):
             return True
 
     def start_monitoring(self) -> None:
-        """Start monitoring source folder for this job."""
+        """Start background directory monitoring."""
         if self.is_monitoring:
             return
 
@@ -367,7 +435,7 @@ class JobController(QObject):
             src = Path(self.job.source_folder)
             src.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            self.log_message.emit(self.job.id, "error", f"Cannot create source folder: {e}")
+            self.log_message.emit(self.job.id, "ERROR", f"Cannot create source folder: {e}")
             return
 
         self._monitor = FileMonitor(
@@ -419,14 +487,14 @@ class JobController(QObject):
                         self._emit_stats()
 
             except Exception as e:
-                logger.exception("Initial scan error for job %s: %s", self.job.name, e)
+                logger.exception("Initial scan error for '%s': %s", self.job.name, e)
 
         threading.Thread(target=_start_and_scan, daemon=True).start()
         self.monitoring_changed.emit(self.job.id, True)
-        self.log_message.emit(self.job.id, "info", f"Started monitoring '{self.job.name}'")
+        self.log_message.emit(self.job.id, "INFO", f"Started monitoring '{self.job.name}'")
 
     def stop_monitoring(self) -> None:
-        """Stop background monitoring for this job."""
+        """Stop background monitoring."""
         if not self.is_monitoring:
             return
 
@@ -438,14 +506,10 @@ class JobController(QObject):
         self._retry_timer.stop()
         self._window_timer.stop()
 
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-
         self.monitoring_changed.emit(self.job.id, False)
-        self.log_message.emit(self.job.id, "info", f"Stopped monitoring '{self.job.name}'")
+        self.log_message.emit(self.job.id, "INFO", f"Stopped monitoring '{self.job.name}'")
 
     def _on_file_detected(self, file_path: str) -> None:
-        """Handle new file event from FileMonitor."""
         try:
             p = Path(file_path)
             if not p.exists() or p.is_dir():
@@ -485,7 +549,10 @@ class JobController(QObject):
         self._emit_stats()
 
     def _run_safety_checks(self) -> None:
-        """Periodically check pending files for lock release & stability."""
+        """Check pending files for lock release and stability in a background thread."""
+        if getattr(self, "_is_checking_safety", False):
+            return
+
         to_check = [
             r for r in list(self._active_records.values())
             if r.status in (FileStatus.DETECTED, FileStatus.PROCESSING)
@@ -493,29 +560,42 @@ class JobController(QObject):
         if not to_check:
             return
 
-        ready_files = []
-        for record in to_check:
-            status = self._safety.check_file(record.source_path)
-            if status != record.status:
-                record.status = status
-                if status == FileStatus.READY:
-                    if self.job.schedule_mode == "window" and not record.override_window:
-                        record.status = FileStatus.WAITING_FOR_WINDOW
-                    else:
-                        ready_files.append(record)
+        self._is_checking_safety = True
 
-                self._db.save_record(record)
-                self.file_status_changed.emit(self.job.id, record.id, record.status)
+        def _bg_safety():
+            try:
+                ready_files = []
+                changed = []
+                for record in to_check:
+                    status = self._safety.check_file(record.source_path)
+                    if status != record.status:
+                        record.status = status
+                        if status == FileStatus.READY:
+                            if self.job.schedule_mode == "window" and not record.override_window:
+                                record.status = FileStatus.WAITING_FOR_WINDOW
+                            else:
+                                ready_files.append(record)
+                        changed.append(record)
 
-        if ready_files and self.is_monitoring and self.job.schedule_mode == "continuous":
-            self._queue_files(ready_files)
+                if changed:
+                    self._db.save_records_batch(changed)
+                    for record in changed:
+                        self.file_status_changed.emit(self.job.id, record.id, record.status)
 
-        self._emit_stats()
+                if ready_files and self.is_monitoring and self.job.schedule_mode == "continuous":
+                    self.enqueue_requested.emit(self.job.id, ready_files)
+
+                self._emit_stats()
+            finally:
+                self._is_checking_safety = False
+
+        threading.Thread(target=_bg_safety, daemon=True).start()
 
     def _check_windows(self) -> None:
         """
-        Scheduled Transfer Execution:
-        At the configured window_end time, execute the batch transfer of all accumulated files!
+        Scheduled Window Trigger:
+        At the configured window_end time, enqueue all waiting files into the
+        Sequential Global Transfer Queue.
         """
         if self.job.schedule_mode != "window":
             return
@@ -531,36 +611,34 @@ class JobController(QObject):
         current_minute = now.strftime("%Y-%m-%d_%H:%M")
         is_end_minute = (now_time.hour == end_time_base.hour and now_time.minute == end_time_base.minute)
 
-        if is_end_minute and self._last_window_executed_minute != current_minute:
-            self._last_window_executed_minute = current_minute
-
-            # Gather all waiting files
+        if is_end_minute:
             waiting = [
                 r for r in list(self._active_records.values())
                 if r.status in (FileStatus.WAITING_FOR_WINDOW, FileStatus.READY, FileStatus.PROCESSING, FileStatus.DETECTED)
             ]
 
-            # Also check DB for any waiting records
             db_records = self._db.get_active_records(self.job.id)
             for r in db_records:
                 if r.source_path not in self._active_records:
                     self._active_records[r.source_path] = r
+                if r.status in (FileStatus.WAITING_FOR_WINDOW, FileStatus.READY, FileStatus.PROCESSING, FileStatus.DETECTED) and r not in waiting:
                     waiting.append(r)
 
-            if waiting:
-                logger.info("Window end reached (%s) for '%s'. Executing batch transfer for %d files.",
+            if waiting and self._last_window_executed_minute != current_minute:
+                self._last_window_executed_minute = current_minute
+                logger.info("Window end reached (%s) for '%s'. Enqueueing %d files.",
                             self.job.window_end, self.job.name, len(waiting))
                 self.log_message.emit(
                     self.job.id,
-                    "info",
-                    f"Window end reached ({self.job.window_end}). Executing batch transfer for {len(waiting)} file(s)...",
+                    "INFO",
+                    f"Window end reached ({self.job.window_end}). Enqueueing {len(waiting)} file(s) for transfer.",
                 )
                 for record in waiting:
                     record.status = FileStatus.READY
                     self.file_status_changed.emit(self.job.id, record.id, record.status)
 
                 self._db.save_records_batch(waiting)
-                self._queue_files(waiting)
+                self.enqueue_requested.emit(self.job.id, waiting)
                 self._emit_stats()
 
     def sync_now(self) -> tuple[list[TransferRecord], list[TransferRecord]]:
@@ -600,7 +678,6 @@ class JobController(QObject):
                 self._active_records[fpath] = rec
                 self._db.save_record(rec)
 
-        # Run safety check on all detected files
         ready: list[TransferRecord] = []
         processing: list[TransferRecord] = []
 
@@ -618,16 +695,12 @@ class JobController(QObject):
         return ready, processing
 
     def transfer_ready_files(self, override: bool = False) -> int:
-        """Transfer all currently ready files for this job."""
+        """Transfer ready files by requesting placement into the Central Transfer Queue."""
         ready = []
         for r in list(self._active_records.values()):
             if r.status in (FileStatus.READY, FileStatus.WAITING_FOR_WINDOW):
-                if override or r.override_window:
+                if override or r.override_window or self.is_in_transfer_window:
                     r.override_window = True
-                    r.status = FileStatus.READY
-                    self._db.save_record(r)
-                    ready.append(r)
-                elif self.is_in_transfer_window:
                     r.status = FileStatus.READY
                     self._db.save_record(r)
                     ready.append(r)
@@ -636,7 +709,10 @@ class JobController(QObject):
                     self._db.save_record(r)
                     self.file_status_changed.emit(self.job.id, r.id, r.status)
 
-        return self._queue_files(ready)
+        if ready:
+            self.enqueue_requested.emit(self.job.id, ready)
+            return len(ready)
+        return 0
 
     def force_start(self, record_id: str) -> None:
         record = self._find_record_by_id(record_id)
@@ -645,88 +721,7 @@ class JobController(QObject):
             record.status = FileStatus.READY
             self._db.save_record(record)
             self.file_status_changed.emit(self.job.id, record.id, record.status)
-            self._queue_file(record)
-
-    def _queue_file(self, record: TransferRecord, auto_start: bool = True) -> bool:
-        if not self.is_in_transfer_window and not record.override_window:
-            record.status = FileStatus.WAITING_FOR_WINDOW
-            self._db.save_record(record)
-            self.file_status_changed.emit(self.job.id, record.id, record.status)
-            self._emit_stats()
-            return False
-
-        record.status = FileStatus.QUEUED
-        self._db.save_record(record)
-        self.file_status_changed.emit(self.job.id, record.id, record.status)
-        self._emit_stats()
-
-        if auto_start and not self._is_transferring:
-            self._start_transfer_batch()
-        return True
-
-    def _queue_files(self, records: list[TransferRecord]) -> int:
-        queued_count = 0
-        for record in records:
-            if self._queue_file(record, auto_start=False):
-                queued_count += 1
-        if queued_count > 0 and not self._is_transferring:
-            self._start_transfer_batch()
-        return queued_count
-
-    def _start_transfer_batch(self) -> None:
-        if self._is_transferring:
-            return
-
-        queued = [
-            r for r in list(self._active_records.values())
-            if r.status == FileStatus.QUEUED
-        ]
-        if not queued:
-            return
-
-        self._is_transferring = True
-        self._worker = TransferWorker(
-            records=queued,
-            engine=self._engine,
-            db=self._db,
-            config=self._config,
-            job=self.job,
-            parent=self,
-        )
-        self._worker.transfer_started.connect(self._on_transfer_started)
-        self._worker.transfer_progress.connect(self._on_transfer_progress)
-        self._worker.transfer_completed.connect(self._on_transfer_completed)
-        self._worker.all_done.connect(self._on_all_transfers_done)
-        self._worker.start()
-
-    def _on_transfer_started(self, record_id: str) -> None:
-        record = self._find_record_by_id(record_id)
-        if record:
-            self.file_status_changed.emit(self.job.id, record_id, FileStatus.TRANSFERRING)
-
-    def _on_transfer_progress(self, record_id: str, phase: str, cur: int, tot: int) -> None:
-        self.transfer_progress.emit(self.job.id, record_id, phase, cur, tot)
-
-    def _on_transfer_completed(self, record_id: str, result: TransferResult) -> None:
-        record = self._find_record_by_id(record_id)
-        if record:
-            self._db.save_record(record)
-            self.transfer_completed.emit(self.job.id, record_id, result)
-        self._emit_stats()
-
-    def _on_all_transfers_done(self) -> None:
-        self._is_transferring = False
-        self._worker = None
-
-        # Clean active completed records from in-memory dictionary
-        completed_paths = [
-            path for path, r in self._active_records.items()
-            if r.status in (FileStatus.COMPLETED, FileStatus.SKIPPED)
-        ]
-        for path in completed_paths:
-            del self._active_records[path]
-
-        self._emit_stats()
+            self.enqueue_requested.emit(self.job.id, [record])
 
     def _process_retries(self) -> None:
         failed = [
@@ -756,7 +751,7 @@ class JobController(QObject):
                 except OSError:
                     pass
         if deleted > 0:
-            self.log_message.emit(self.job.id, "info", f"Auto-cleanup deleted {deleted} old source file(s)")
+            self.log_message.emit(self.job.id, "INFO", f"Auto-cleanup removed {deleted} old source file(s)")
 
     def _find_record_by_id(self, record_id: str) -> Optional[TransferRecord]:
         for r in self._active_records.values():
@@ -771,22 +766,30 @@ class JobController(QObject):
 
 class TransferManager(QObject):
     """
-    Central Multi-Job Transfer Manager.
+    Central Multi-Job Transfer Manager with Sequential Global Transfer Queue.
 
-    Coordinates all configured transfer jobs concurrently, allowing each
-    job to monitor, safety-check, and execute transfers independently in the background.
+    - Monitors all enabled jobs concurrently.
+    - Processes transfer batches sequentially (one job at a time in FIFO order)
+      to eliminate disk thrashing, lock contention, and missed schedules.
     """
 
-    # Global signals forwarded to GUI
-    file_detected = Signal(str, object)          # file_path, TransferRecord
-    files_detected = Signal(list)                # list[TransferRecord]
-    file_status_changed = Signal(str, object)    # record_id, FileStatus
+    file_detected = Signal(str, object)          # file_path, TransferRecord (for active workspace job)
+    files_detected = Signal(list)                # list[TransferRecord] (for active workspace job)
+    file_status_changed = Signal(str, object)    # record_id, FileStatus (for active workspace job)
     transfer_progress = Signal(str, str, int, int)  # record_id, phase, current, total
-    transfer_completed = Signal(str, object)     # record_id, TransferResult
-    stats_updated = Signal(dict)                 # {status: count} for active job
-    monitoring_changed = Signal(bool)            # is_monitoring for active job
+    transfer_completed = Signal(str, object)     # record_id, TransferResult (for active workspace job)
+    stats_updated = Signal(dict)                 # {status: count} for active workspace job
+    monitoring_changed = Signal(bool)            # is_monitoring for active workspace job
     conflict_detected = Signal(object)           # TransferRecord
     log_message = Signal(str, str)               # level, message
+
+    # Multi-job live signals for Main Dashboard (emitted for all jobs in real-time)
+    job_file_detected = Signal(str, str, object)       # job_id, file_path, TransferRecord
+    job_file_status_changed = Signal(str, str, object) # job_id, record_id, FileStatus
+    job_transfer_progress = Signal(str, str, int, int) # job_id, phase, current, total
+    job_transfer_completed = Signal(str, str, object)  # job_id, record_id, TransferResult
+    job_stats_updated = Signal(str, dict)              # job_id, stats dict
+    job_status_changed = Signal(str, str)              # job_id, execution_state
 
     def __init__(
         self,
@@ -800,21 +803,24 @@ class TransferManager(QObject):
         self._controllers: dict[str, JobController] = {}
         self._current_job: Optional[TransferJob] = None
 
+        # Sequential Global Transfer Queue state
+        self._transfer_queue: list[JobBatchRequest] = []
+        self._active_transfer_job_id: Optional[str] = None
+        self._active_worker: Optional[TransferWorker] = None
+
         self.reload_jobs()
 
     def reload_jobs(self) -> None:
-        """Reload all jobs from database and synchronize job controllers."""
+        """Reload all jobs from database and synchronize controllers."""
         jobs = self._db.get_jobs()
         job_map = {j.id: j for j in jobs}
 
-        # Stop and remove controllers for deleted jobs
         for jid in list(self._controllers.keys()):
             if jid not in job_map:
                 ctrl = self._controllers.pop(jid)
                 ctrl.stop_monitoring()
                 ctrl.deleteLater()
 
-        # Add or update controllers for existing jobs
         for job in jobs:
             if job.id in self._controllers:
                 self._controllers[job.id].job = job
@@ -829,6 +835,7 @@ class TransferManager(QObject):
                 ctrl.monitoring_changed.connect(self._on_ctrl_monitoring_changed)
                 ctrl.conflict_detected.connect(self._on_ctrl_conflict_detected)
                 ctrl.log_message.connect(self._on_ctrl_log_message)
+                ctrl.enqueue_requested.connect(self.enqueue_job_batch)
                 self._controllers[job.id] = ctrl
 
     def get_controller(self, job_id: str) -> Optional[JobController]:
@@ -858,9 +865,7 @@ class TransferManager(QObject):
 
     @property
     def _worker(self) -> Optional[TransferWorker]:
-        if self._current_job and self._current_job.id in self._controllers:
-            return self._controllers[self._current_job.id]._worker
-        return None
+        return self._active_worker
 
     @property
     def is_in_transfer_window(self) -> bool:
@@ -876,61 +881,69 @@ class TransferManager(QObject):
         ctrl = self._controllers.get(job_id)
         return ctrl.is_in_transfer_window if ctrl else True
 
+    def get_job_execution_state(self, job_id: str) -> str:
+        """
+        Return the real-time execution state for a job card:
+        'TRANSFERRING', 'QUEUED', 'IN_WINDOW', 'OUTSIDE_WINDOW', 'MONITORING', or 'IDLE'
+        """
+        if self._active_transfer_job_id == job_id:
+            return "TRANSFERRING"
+        if any(req.job_id == job_id for req in self._transfer_queue):
+            return "QUEUED"
+        ctrl = self._controllers.get(job_id)
+        if not ctrl:
+            return "IDLE"
+        if ctrl.is_monitoring:
+            if ctrl.job.schedule_mode == "window":
+                return "IN_WINDOW" if ctrl.is_in_transfer_window else "OUTSIDE_WINDOW"
+            return "MONITORING"
+        return "IDLE"
+
     def set_job(self, job: TransferJob) -> None:
-        """Set the active workspace job."""
         self._current_job = job
         if job.id not in self._controllers:
             self.reload_jobs()
         self._emit_stats()
 
     def start_monitoring(self) -> None:
-        """Start monitoring the active workspace job."""
         if self._current_job and self._current_job.id in self._controllers:
             self._controllers[self._current_job.id].start_monitoring()
 
     def stop_monitoring(self) -> None:
-        """Stop monitoring the active workspace job."""
         if self._current_job and self._current_job.id in self._controllers:
             self._controllers[self._current_job.id].stop_monitoring()
 
     def start_job_monitoring(self, job_id: str) -> None:
-        """Start background monitoring for a specific job."""
         ctrl = self._controllers.get(job_id)
         if ctrl:
             ctrl.start_monitoring()
 
     def stop_job_monitoring(self, job_id: str) -> None:
-        """Stop background monitoring for a specific job."""
         ctrl = self._controllers.get(job_id)
         if ctrl:
             ctrl.stop_monitoring()
 
     def start_all_monitoring(self) -> None:
-        """Start background monitoring for all configured jobs."""
         for ctrl in self._controllers.values():
             if ctrl.job.enabled:
                 ctrl.start_monitoring()
 
     def stop_all_monitoring(self) -> None:
-        """Stop background monitoring for all jobs."""
         for ctrl in self._controllers.values():
             ctrl.stop_monitoring()
 
     def sync_now(self) -> tuple[list[TransferRecord], list[TransferRecord]]:
-        """Manual sync for the active workspace job."""
         if self._current_job and self._current_job.id in self._controllers:
             return self._controllers[self._current_job.id].sync_now()
         return [], []
 
     def sync_job(self, job_id: str) -> tuple[list[TransferRecord], list[TransferRecord]]:
-        """Manual sync for a specific job."""
         ctrl = self._controllers.get(job_id)
         if ctrl:
             return ctrl.sync_now()
         return [], []
 
     def transfer_ready_files(self, job_id: Optional[str] = None, override: bool = False) -> int:
-        """Transfer ready files for specified or active job."""
         jid = job_id or (self._current_job.id if self._current_job else None)
         if jid and jid in self._controllers:
             return self._controllers[jid].transfer_ready_files(override=override)
@@ -951,7 +964,7 @@ class TransferManager(QObject):
                     rec.error_message = None
                     self._db.save_record(rec)
                     ctrl.file_status_changed.emit(ctrl.job.id, rec.id, rec.status)
-                    ctrl._queue_file(rec)
+                    self.enqueue_job_batch(ctrl.job.id, [rec])
                 elif resolution == ConflictResolution.SKIP:
                     rec.status = FileStatus.SKIPPED
                     rec.error_message = "Skipped by user"
@@ -983,18 +996,147 @@ class TransferManager(QObject):
         return self._db.get_record_by_id(record_id)
 
     # ──────────────────────────────────────────────
+    # Sequential Global Transfer Queue Dispatcher
+    # ──────────────────────────────────────────────
+
+    def enqueue_job_batch(self, job_id: str, records: list[TransferRecord]) -> None:
+        """Enqueue a batch of records for sequential processing."""
+        ctrl = self.get_controller(job_id)
+        if not ctrl or not records:
+            return
+
+        for record in records:
+            record.status = FileStatus.QUEUED
+            self._db.save_record(record)
+            ctrl.file_status_changed.emit(job_id, record.id, record.status)
+
+        # Check if job is already in queue
+        existing = next((req for req in self._transfer_queue if req.job_id == job_id), None)
+        if existing:
+            # Merge records into existing request
+            existing_ids = {r.id for r in existing.records}
+            for r in records:
+                if r.id not in existing_ids:
+                    existing.records.append(r)
+        else:
+            self._transfer_queue.append(JobBatchRequest(job_id=job_id, records=records))
+
+        ctrl._emit_stats()
+
+        # Emit updated execution states for all jobs
+        for jid in list(self._controllers.keys()):
+            self.job_status_changed.emit(jid, self.get_job_execution_state(jid))
+
+        # If no job is currently transferring, dispatch immediately
+        if self._active_worker is None:
+            self._dispatch_next_batch()
+
+    def _dispatch_next_batch(self) -> None:
+        """Dispatch the next job batch in the FIFO queue."""
+        if not self._transfer_queue:
+            self._active_transfer_job_id = None
+            self._active_worker = None
+            for jid in list(self._controllers.keys()):
+                self.job_status_changed.emit(jid, self.get_job_execution_state(jid))
+            return
+
+        request = self._transfer_queue.pop(0)
+        ctrl = self.get_controller(request.job_id)
+        if not ctrl or not request.records:
+            self._dispatch_next_batch()
+            return
+
+        self._active_transfer_job_id = request.job_id
+        logger.info("Sequential Queue: Starting batch transfer for job '%s' (%d records)",
+                    ctrl.job.name, len(request.records))
+        self.log_message.emit("INFO", f"Starting transfer for '{ctrl.job.name}' ({len(request.records)} files)")
+
+        # Notify UI of updated statuses across all jobs
+        for jid in list(self._controllers.keys()):
+            self.job_status_changed.emit(jid, self.get_job_execution_state(jid))
+
+        self._active_worker = TransferWorker(
+            records=request.records,
+            engine=ctrl._engine,
+            db=self._db,
+            config=self._config,
+            job=ctrl.job,
+            parent=self,
+        )
+        self._active_worker.transfer_started.connect(
+            lambda rid, jid=ctrl.job.id: self._on_worker_transfer_started(jid, rid)
+        )
+        self._active_worker.transfer_progress.connect(
+            lambda rid, ph, c, t, jid=ctrl.job.id: self._on_worker_progress(jid, rid, ph, c, t)
+        )
+        self._active_worker.transfer_completed.connect(
+            lambda rid, res, jid=ctrl.job.id: self._on_worker_transfer_completed(jid, rid, res)
+        )
+        self._active_worker.finished.connect(
+            lambda jid=ctrl.job.id: self._on_worker_all_done(jid)
+        )
+        self._active_worker.start()
+
+    def _on_worker_progress(self, job_id: str, record_id: str, phase: str, cur: int, tot: int) -> None:
+        ctrl = self.get_controller(job_id)
+        if ctrl:
+            ctrl.transfer_progress.emit(job_id, record_id, phase, cur, tot)
+        self.job_transfer_progress.emit(job_id, phase, cur, tot)
+        if self._current_job and self._current_job.id == job_id:
+            self.transfer_progress.emit(record_id, phase, cur, tot)
+
+    def _on_worker_transfer_started(self, job_id: str, record_id: str) -> None:
+        ctrl = self.get_controller(job_id)
+        if ctrl:
+            ctrl.file_status_changed.emit(job_id, record_id, FileStatus.TRANSFERRING)
+            self.job_status_changed.emit(job_id, "TRANSFERRING")
+
+    def _on_worker_transfer_completed(self, job_id: str, record_id: str, result: TransferResult) -> None:
+        ctrl = self.get_controller(job_id)
+        if ctrl:
+            record = ctrl._find_record_by_id(record_id)
+            if record:
+                self._db.save_record(record)
+                ctrl.transfer_completed.emit(job_id, record_id, result)
+            ctrl._emit_stats()
+
+    def _on_worker_all_done(self, job_id: str) -> None:
+        ctrl = self.get_controller(job_id)
+        if ctrl:
+            completed_paths = [
+                path for path, r in ctrl._active_records.items()
+                if r.status in (FileStatus.COMPLETED, FileStatus.SKIPPED)
+            ]
+            for path in completed_paths:
+                del ctrl._active_records[path]
+            ctrl._emit_stats()
+
+        self._active_transfer_job_id = None
+        self._active_worker = None
+
+        for jid in list(self._controllers.keys()):
+            self.job_status_changed.emit(jid, self.get_job_execution_state(jid))
+
+        # Automatically process the next queued job batch in line
+        self._dispatch_next_batch()
+
+    # ──────────────────────────────────────────────
     # Controller Signal Forwarding
     # ──────────────────────────────────────────────
 
     def _on_ctrl_file_detected(self, job_id: str, file_path: str, record: TransferRecord) -> None:
+        self.job_file_detected.emit(job_id, file_path, record)
         if self._current_job and self._current_job.id == job_id:
             self.file_detected.emit(file_path, record)
 
     def _on_ctrl_files_detected(self, job_id: str, records: list) -> None:
+        for r in records:
+            self.job_file_detected.emit(job_id, r.source_path, r)
         if self._current_job and self._current_job.id == job_id:
             self.files_detected.emit(records)
 
     def _on_ctrl_file_status_changed(self, job_id: str, record_id: str, status: FileStatus) -> None:
+        self.job_file_status_changed.emit(job_id, record_id, status)
         if self._current_job and self._current_job.id == job_id:
             self.file_status_changed.emit(record_id, status)
 
@@ -1003,14 +1145,17 @@ class TransferManager(QObject):
             self.transfer_progress.emit(record_id, phase, cur, tot)
 
     def _on_ctrl_transfer_completed(self, job_id: str, record_id: str, result: TransferResult) -> None:
+        self.job_transfer_completed.emit(job_id, record_id, result)
         if self._current_job and self._current_job.id == job_id:
             self.transfer_completed.emit(record_id, result)
 
     def _on_ctrl_stats_updated(self, job_id: str, stats: dict) -> None:
+        self.job_stats_updated.emit(job_id, stats)
         if self._current_job and self._current_job.id == job_id:
             self.stats_updated.emit(stats)
 
     def _on_ctrl_monitoring_changed(self, job_id: str, is_monitoring: bool) -> None:
+        self.job_status_changed.emit(job_id, self.get_job_execution_state(job_id))
         if self._current_job and self._current_job.id == job_id:
             self.monitoring_changed.emit(is_monitoring)
 
@@ -1025,7 +1170,9 @@ class TransferManager(QObject):
         if self._current_job:
             stats = self._db.get_statistics(self._current_job.id)
             self.stats_updated.emit(stats)
+            self.job_stats_updated.emit(self._current_job.id, stats)
 
     def shutdown(self) -> None:
-        """Stop all monitoring and workers."""
         self.stop_all_monitoring()
+        if self._active_worker and self._active_worker.isRunning():
+            self._active_worker.cancel()

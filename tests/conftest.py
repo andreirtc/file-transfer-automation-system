@@ -89,3 +89,14 @@ def large_sample_file(tmp_source_dir):
         for _ in range(1024):
             f.write(data)
     return file_path
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """Create or retrieve QApplication instance for Qt tests."""
+    import sys
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    return app

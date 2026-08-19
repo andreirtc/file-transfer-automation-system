@@ -315,8 +315,106 @@ def test_window_end_batch_transfer_execution(tmp_source_dir, tmp_dest_dir, test_
     # Trigger window check (simulates timer tick at window_end)
     ctrl._check_windows()
 
-    if ctrl._worker:
-        ctrl._worker.wait(10000)
+    if manager._worker:
+        manager._worker.wait(10000)
 
     assert record.status == FileStatus.COMPLETED
     assert Path(record.destination_path).exists()
+
+
+def test_sequential_global_transfer_queue_execution(tmp_path, test_db, config, qapp):
+    """Test that multiple jobs queued simultaneously execute one by one in sequential FIFO order."""
+    import time
+    config.set("batch_compression_enabled", True)
+    config.set("zip_password", "winpass123")
+
+    # Create 3 jobs
+    jobs = []
+    records = []
+    for name in ("Easy", "Medium", "Hard"):
+        src_dir = tmp_path / f"{name.lower()}_src"
+        dst_dir = tmp_path / f"{name.lower()}_dst"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        job = TransferJob(
+            name=f"{name} Job",
+            source_folder=str(src_dir),
+            destination_folder=str(dst_dir),
+            schedule_mode="continuous",
+        )
+        test_db.save_job(job)
+        jobs.append(job)
+
+        src_file = src_dir / f"{name.lower()}_file.txt"
+        src_file.write_text(f"Content for {name}")
+
+        rec = TransferRecord(
+            job_id=job.id,
+            file_name=src_file.name,
+            source_path=str(src_file),
+            destination_path=str(dst_dir / src_file.name),
+            file_size=src_file.stat().st_size,
+            source_modified=src_file.stat().st_mtime,
+            status=FileStatus.READY,
+        )
+        test_db.save_record(rec)
+        records.append(rec)
+
+    manager = TransferManager(config, test_db)
+    assert len(manager._controllers) == 3
+
+    # Enqueue all 3 jobs into the sequential transfer queue
+    for job, rec in zip(jobs, records):
+        ctrl = manager.get_controller(job.id)
+        ctrl._active_records[rec.source_path] = rec
+        manager.enqueue_job_batch(job.id, [rec])
+
+    # Wait for the sequential worker queue to drain completely
+    for _ in range(100):
+        qapp.processEvents()
+        if manager._active_worker and manager._active_worker.isRunning():
+            manager._active_worker.wait(100)
+        qapp.processEvents()
+        if not manager._active_worker and not manager._transfer_queue:
+            break
+        time.sleep(0.05)
+
+    # Verify all 3 jobs completed successfully
+    for rec in records:
+        updated = test_db.get_record_by_id(rec.id)
+        assert updated is not None
+        assert updated.status == FileStatus.COMPLETED
+        assert Path(updated.destination_path).exists()
+
+
+def test_main_dashboard_progress_bar_updates(qapp, tmp_path, test_db, config):
+    """Test that MainDashboardWidget and JobOverviewCard display and update progress bars smoothly."""
+    from gui.main_dashboard import MainDashboardWidget, JobOverviewCard
+
+    job = TransferJob(
+        name="Progress Test Job",
+        source_folder=str(tmp_path / "src"),
+        destination_folder=str(tmp_path / "dst"),
+        schedule_mode="continuous",
+    )
+    test_db.save_job(job)
+
+    dashboard = MainDashboardWidget()
+    dashboard.set_jobs([job], {job.id: {"COMPLETED": 0, "DETECTED": 2}}, {job.id: "TRANSFERRING"})
+
+    assert job.id in dashboard._job_cards
+    card: JobOverviewCard = dashboard._job_cards[job.id]
+
+    # Progress bar should be visible during transferring
+    assert not card._progress_container.isHidden()
+
+    # Update progress
+    dashboard.update_job_progress(job.id, "copy", 50, 100)
+    assert card._progress_bar.value() == 50
+    assert card._progress_percent.text() == "50%"
+
+    # When transitioning to IDLE/COMPLETED, progress container hides
+    card.update_status("IDLE")
+    assert card._progress_container.isHidden()
+

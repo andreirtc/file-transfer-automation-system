@@ -14,6 +14,13 @@ from __future__ import annotations
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+import sys
+
+
+def get_app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def setup_logging(
@@ -32,7 +39,7 @@ def setup_logging(
         console_level: Logging level for console output.
     """
     if log_dir is None:
-        log_dir = Path(__file__).resolve().parent.parent / "logs"
+        log_dir = get_app_dir() / "logs"
     else:
         log_dir = Path(log_dir)
 
@@ -129,7 +136,7 @@ def _add_rotating_handler(
 def get_log_file_paths(log_dir: str | Path | None = None) -> dict[str, Path]:
     """Return paths to all log files for the log viewer."""
     if log_dir is None:
-        log_dir = Path(__file__).resolve().parent.parent / "logs"
+        log_dir = get_app_dir() / "logs"
     else:
         log_dir = Path(log_dir)
 

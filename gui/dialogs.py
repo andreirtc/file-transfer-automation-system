@@ -329,10 +329,16 @@ class SettingsDialog(MessageBoxBase):
 
         # Auto Cleanup
         self._auto_cleanup = SwitchButton("Auto Cleanup", self)
-        self._auto_cleanup.setOnText("Enabled (Delete 7+ days old on Mondays)")
+        self._auto_cleanup.setOnText("Enabled (Periodic deletion of transferred files)")
         self._auto_cleanup.setOffText("Disabled")
         self._auto_cleanup.setChecked(config.auto_cleanup_enabled)
         form.addRow(BodyLabel("Source Cleanup:", self), self._auto_cleanup)
+
+        # Auto Cleanup Days Retention
+        self._auto_cleanup_days = SpinBox(self)
+        self._auto_cleanup_days.setRange(1, 365)
+        self._auto_cleanup_days.setValue(config.auto_cleanup_days)
+        form.addRow(BodyLabel("Cleanup Retention (Days):", self), self._auto_cleanup_days)
 
         # Batch Compression
         self._batch_compression = SwitchButton("Batch Compression", self)
@@ -357,6 +363,7 @@ class SettingsDialog(MessageBoxBase):
         self._config.set("overwrite_policy", self._overwrite_policy.currentData())
         self._config.set("network_drive_mode", self._network_mode.isChecked())
         self._config.set("auto_cleanup_enabled", self._auto_cleanup.isChecked())
+        self._config.set("auto_cleanup_days", self._auto_cleanup_days.value())
         self._config.set("batch_compression_enabled", self._batch_compression.isChecked())
         self._config.set("zip_password", self._zip_password.text())
         self._config.save()

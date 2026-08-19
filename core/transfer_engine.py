@@ -267,19 +267,25 @@ class TransferEngine:
         destination: Path,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> None:
-        """Copy a file with optional progress reporting."""
+        """Copy a file with optional throttled progress reporting."""
+        import time
         total_size = source.stat().st_size
         bytes_copied = 0
+        chunk_size = max(self._integrity._chunk_size, 1048576)
+        last_callback_time = 0.0
 
         with open(source, "rb") as src, open(destination, "wb") as dst:
             while True:
-                chunk = src.read(self._integrity._chunk_size)
+                chunk = src.read(chunk_size)
                 if not chunk:
                     break
                 dst.write(chunk)
                 bytes_copied += len(chunk)
                 if progress_callback:
-                    progress_callback("copy", bytes_copied, total_size)
+                    now = time.time()
+                    if bytes_copied == total_size or (now - last_callback_time) >= 0.1:
+                        last_callback_time = now
+                        progress_callback("copy", bytes_copied, total_size)
 
         # Preserve metadata (timestamps, permissions)
         shutil.copystat(str(source), str(destination))

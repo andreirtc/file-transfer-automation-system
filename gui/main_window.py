@@ -68,6 +68,10 @@ class MainWindow(MSFluentWindow):
         # Setup Window
         self.setWindowTitle("File Transfer Automation System")
         self.resize(1280, 850)
+        icon_path = Path(__file__).resolve().parent.parent / "assets" / "app_icon.png"
+        if icon_path.exists():
+            from PySide6.QtGui import QIcon
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         # Create primary interfaces
         self._main_dashboard = MainDashboardWidget(self)
@@ -195,9 +199,17 @@ class MainWindow(MSFluentWindow):
         self._manager.conflict_detected.connect(self._on_conflict_detected)
         self._manager.log_message.connect(self._on_log_message)
 
-        # UI timer for real-time window & multi-job status updates
+        # Multi-job live signals for real-time Main Dashboard updates
+        self._manager.job_file_detected.connect(self._on_job_file_detected)
+        self._manager.job_file_status_changed.connect(self._on_job_file_status_changed)
+        self._manager.job_transfer_progress.connect(self._on_job_transfer_progress)
+        self._manager.job_transfer_completed.connect(self._on_job_transfer_completed)
+        self._manager.job_stats_updated.connect(self._on_job_stats_updated)
+        self._manager.job_status_changed.connect(self._on_job_status_changed)
+
+        # UI timer for real-time window & multi-job status updates (every 1 second)
         self._ui_window_timer = QTimer(self)
-        self._ui_window_timer.setInterval(2000)
+        self._ui_window_timer.setInterval(1000)
         self._ui_window_timer.timeout.connect(self._update_all_status_indicators)
         self._ui_window_timer.start()
 
@@ -240,14 +252,12 @@ class MainWindow(MSFluentWindow):
         current_job = self._manager.current_job
         cur_id = active_job_id or (current_job.id if current_job else (jobs[0].id if jobs else None))
 
-        mon_states = {j.id: self._manager.is_job_monitoring(j.id) for j in jobs}
-        win_states = {j.id: self._manager.is_job_in_window(j.id) for j in jobs}
+        exec_states = {j.id: self._manager.get_job_execution_state(j.id) for j in jobs}
 
         self._main_dashboard.set_jobs(
             jobs=jobs,
             job_stats=all_stats,
-            monitoring_states=mon_states,
-            window_states=win_states,
+            execution_states=exec_states,
         )
 
         if jobs and cur_id:
@@ -260,12 +270,25 @@ class MainWindow(MSFluentWindow):
         self._update_all_status_indicators()
 
     def _update_all_status_indicators(self):
-        """Update live status badges on Main Dashboard and Job Workspace."""
+        """Update live status badges, count pills, and KPIs on Main Dashboard and Job Workspace."""
         jobs = self._db.get_jobs()
+        all_stats = self._db.get_all_job_statistics()
         for job in jobs:
-            is_mon = self._manager.is_job_monitoring(job.id)
-            in_win = self._manager.is_job_in_window(job.id)
-            self._main_dashboard.update_job_status(job.id, is_mon, in_win)
+            state = self._manager.get_job_execution_state(job.id)
+            self._main_dashboard.update_job_status(job.id, state)
+            stats = all_stats.get(job.id, {})
+            self._main_dashboard.update_job_counts(job.id, stats)
+
+        # Update KPI tiles on Main Dashboard
+        total_transferred = sum(s.get("COMPLETED", 0) for s in all_stats.values())
+        total_issues = sum(s.get("FAILED", 0) + s.get("CONFLICT", 0) for s in all_stats.values())
+        active_monitors = sum(
+            1 for j in jobs if self._manager.get_job_execution_state(j.id) not in ("IDLE", "IDLE / STOPPED")
+        )
+        self._main_dashboard._kpi_jobs.set_value(str(len(jobs)), f"{len(jobs)} configured jobs")
+        self._main_dashboard._kpi_monitoring.set_value(str(active_monitors), f"{active_monitors} active monitors")
+        self._main_dashboard._kpi_transferred.set_value(str(total_transferred), "Files completed")
+        self._main_dashboard._kpi_issues.set_value(str(total_issues), "Failures or conflicts")
 
         # Workspace status
         cur_job = self._manager.current_job
@@ -516,8 +539,37 @@ class MainWindow(MSFluentWindow):
                 self._on_log_message("SUCCESS", f"[{job_name}] Transferred: {record.file_name}")
             else:
                 self._on_log_message("ERROR", f"[{job_name}] Failed: {record.file_name} — {result.error_message}")
+            stats = self._db.get_statistics(record.job_id)
+            self._dashboard.update_statistics(stats)
+            self._main_dashboard.update_job_counts(record.job_id, stats)
+            self._main_dashboard.update_job_status(record.job_id, self._manager.get_job_execution_state(record.job_id))
 
-        self._refresh_all_ui()
+    # ── Multi-job live Main Dashboard handlers ──
+
+    def _on_job_file_detected(self, job_id: str, file_path: str, record: TransferRecord):
+        stats = self._db.get_statistics(job_id)
+        self._main_dashboard.update_job_counts(job_id, stats)
+        self._main_dashboard.update_job_status(job_id, self._manager.get_job_execution_state(job_id))
+
+    def _on_job_file_status_changed(self, job_id: str, record_id: str, status: FileStatus):
+        stats = self._db.get_statistics(job_id)
+        self._main_dashboard.update_job_counts(job_id, stats)
+        self._main_dashboard.update_job_status(job_id, self._manager.get_job_execution_state(job_id))
+
+    def _on_job_transfer_progress(self, job_id: str, phase: str, current: int, total: int):
+        self._main_dashboard.update_job_progress(job_id, phase, current, total)
+
+    def _on_job_stats_updated(self, job_id: str, stats: dict):
+        self._main_dashboard.update_job_counts(job_id, stats)
+        self._main_dashboard.update_job_status(job_id, self._manager.get_job_execution_state(job_id))
+
+    def _on_job_status_changed(self, job_id: str, execution_state: str):
+        self._main_dashboard.update_job_status(job_id, execution_state)
+
+    def _on_job_transfer_completed(self, job_id: str, record_id: str, result: TransferResult):
+        stats = self._db.get_statistics(job_id)
+        self._main_dashboard.update_job_counts(job_id, stats)
+        self._main_dashboard.update_job_status(job_id, self._manager.get_job_execution_state(job_id))
 
     def _on_monitoring_changed(self, is_monitoring: bool):
         self._update_all_status_indicators()
@@ -532,27 +584,9 @@ class MainWindow(MSFluentWindow):
         job_name = self._manager.current_job.name if self._manager.current_job else "System"
         self._main_dashboard.add_activity_event(level, message, job_name)
 
-        if level.upper() == "INFO":
-            InfoBar.info(
-                title="Info",
-                content=message,
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000,
-                parent=self,
-            )
-        elif level.upper() in ("SUCCESS", "COMPLETED"):
-            InfoBar.success(
-                title="Success",
-                content=message,
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=3000,
-                parent=self,
-            )
-        elif level.upper() in ("ERROR", "FAILED"):
+        # Only display overlay popups for critical warnings, errors, and batch finishes to avoid GUI thread lock
+        lvl = level.upper()
+        if lvl in ("ERROR", "FAILED"):
             InfoBar.error(
                 title="Error",
                 content=message,
@@ -562,7 +596,7 @@ class MainWindow(MSFluentWindow):
                 duration=5000,
                 parent=self,
             )
-        elif level.upper() in ("WARNING", "CONFLICT"):
+        elif lvl in ("WARNING", "CONFLICT"):
             InfoBar.warning(
                 title="Warning",
                 content=message,

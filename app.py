@@ -45,6 +45,11 @@ def main():
     app.setApplicationName("File Transfer Automation System")
     app.setOrganizationName("FileTransferAutomation")
 
+    from PySide6.QtGui import QIcon
+    icon_path = PROJECT_ROOT / "assets" / "app_icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     from qfluentwidgets import setTheme, Theme, setThemeColor
     
     # Set Fluent UI Theme
@@ -53,6 +58,8 @@ def main():
 
     # Create and show main window
     window = MainWindow(config, db)
+    if icon_path.exists():
+        window.setWindowIcon(QIcon(str(icon_path)))
     window.show()
 
     logger.info("Application window displayed")
@@ -65,4 +72,23 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 2 and sys.argv[1] == "--compression-worker":
+        from core.compression_worker import compress_files
+        import json
+        config_path = sys.argv[2]
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            compress_files(
+                data["src_paths"],
+                data["prefixes"],
+                data["zip_path"],
+                data.get("password"),
+                data.get("compression_level", 4),
+            )
+            sys.exit(0)
+        except Exception as e:
+            sys.stderr.write(f"Compression worker error: {e}\n")
+            sys.exit(1)
+    else:
+        main()

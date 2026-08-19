@@ -1,9 +1,10 @@
 """
 Main Dashboard widget for the File Transfer Automation System.
 
-Provides a unified central control view of all jobs, aggregate system KPIs,
-individual job status cards with per-job delete/sync/monitor controls,
-and a live multi-job notification stream.
+Provides a unified corporate Windows 11 Fluent control view of all jobs,
+aggregate system KPIs, individual job cards with sequential transfer status,
+per-job actions (Sync, Monitor, Edit, Delete, Workspace), and a live notification stream.
+Strictly designed for enterprise environments (zero emojis).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -37,13 +38,14 @@ from qfluentwidgets import (
     CaptionLabel,
     TableWidget,
     SmoothScrollArea,
+    ProgressBar,
 )
 
-from core.models import FileStatus, TransferJob
+from core.models import TransferJob
 
 
 class OverviewKpiCard(SimpleCardWidget):
-    """KPI summary card for the Main Dashboard overview row."""
+    """Corporate Windows 11 KPI summary card."""
 
     def __init__(
         self,
@@ -56,23 +58,28 @@ class OverviewKpiCard(SimpleCardWidget):
         super().__init__(parent)
         self.setStyleSheet(f"""
             OverviewKpiCard {{
-                border-left: 4px solid {accent_color};
+                border-left: 3px solid {accent_color};
+                background-color: #FFFFFF;
+                border-radius: 6px;
+                border-top: 1px solid #E5E5E5;
+                border-right: 1px solid #E5E5E5;
+                border-bottom: 1px solid #E5E5E5;
             }}
         """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(4)
+        layout.setSpacing(3)
 
         self._value_label = TitleLabel(value, self)
         self._value_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self._value_label)
 
         self._title_label = StrongBodyLabel(title.upper(), self)
-        self._title_label.setStyleSheet("color: #666666;")
+        self._title_label.setStyleSheet("color: #616161; font-size: 11px; letter-spacing: 0.5px;")
         layout.addWidget(self._title_label)
 
         self._subtitle_label = CaptionLabel(subtitle, self)
-        self._subtitle_label.setStyleSheet("color: #888888;")
+        self._subtitle_label.setStyleSheet("color: #7A7A7A;")
         layout.addWidget(self._subtitle_label)
 
     def set_value(self, value: str, subtitle: Optional[str] = None) -> None:
@@ -82,7 +89,7 @@ class OverviewKpiCard(SimpleCardWidget):
 
 
 class JobOverviewCard(CardWidget):
-    """Card displaying a single job's status, paths, stats, and action buttons."""
+    """Corporate Windows 11 card displaying a single job's status, paths, metrics, and actions."""
 
     open_workspace_clicked = Signal(str)
     edit_clicked = Signal(str)
@@ -97,6 +104,13 @@ class JobOverviewCard(CardWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        self.setStyleSheet("""
+            JobOverviewCard {
+                background-color: #FFFFFF;
+                border: 1px solid #E5E5E5;
+                border-radius: 8px;
+            }
+        """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(12)
@@ -108,59 +122,59 @@ class JobOverviewCard(CardWidget):
         self._name_label = SubtitleLabel(self.job.name, self)
         top_layout.addWidget(self._name_label)
 
-        # Monitoring Status Badge
+        # Status Badge
         self._status_badge = BodyLabel("IDLE", self)
         self._status_badge.setStyleSheet("""
-            background-color: #F3F3F3;
-            color: #555555;
+            background-color: #F3F4F6;
+            color: #4B5563;
+            border: 1px solid #E5E7EB;
             padding: 3px 10px;
-            border-radius: 6px;
-            font-weight: bold;
+            border-radius: 4px;
+            font-weight: 600;
             font-size: 11px;
+            letter-spacing: 0.3px;
         """)
         top_layout.addWidget(self._status_badge)
 
         # Schedule Badge
-        self._schedule_badge = BodyLabel(
-            f"⏰ Window: {self.job.window_start} - {self.job.window_end}"
+        schedule_text = (
+            f"Window: {self.job.window_start} - {self.job.window_end}"
             if self.job.schedule_mode == "window"
-            else "🔄 Continuous",
-            self,
+            else "Continuous Mode"
         )
+        self._schedule_badge = BodyLabel(schedule_text, self)
         self._schedule_badge.setStyleSheet("""
-            background-color: #EBF3FC;
-            color: #005A9E;
+            background-color: #F8FAFC;
+            color: #334155;
+            border: 1px solid #E2E8F0;
             padding: 3px 10px;
-            border-radius: 6px;
+            border-radius: 4px;
             font-size: 11px;
+            font-weight: 500;
         """)
         top_layout.addWidget(self._schedule_badge)
 
         top_layout.addStretch()
 
-        # Monitor Toggle Button (Play / Pause)
+        # Action Buttons
         self._btn_toggle_monitor = PushButton("Start Monitoring", self, FluentIcon.PLAY)
         self._btn_toggle_monitor.clicked.connect(lambda: self.toggle_monitor_clicked.emit(self.job.id))
         top_layout.addWidget(self._btn_toggle_monitor)
 
-        # Sync Button
         self._btn_sync = PushButton("Sync Now", self, FluentIcon.SYNC)
         self._btn_sync.clicked.connect(lambda: self.sync_clicked.emit(self.job.id))
         top_layout.addWidget(self._btn_sync)
 
-        # Edit Button
         self._btn_edit = ToolButton(FluentIcon.EDIT, self)
         self._btn_edit.setToolTip("Edit Job Configuration")
         self._btn_edit.clicked.connect(lambda: self.edit_clicked.emit(self.job.id))
         top_layout.addWidget(self._btn_edit)
 
-        # Delete Button
         self._btn_delete = ToolButton(FluentIcon.DELETE, self)
         self._btn_delete.setToolTip("Delete Transfer Job")
         self._btn_delete.clicked.connect(lambda: self.delete_clicked.emit(self.job.id))
         top_layout.addWidget(self._btn_delete)
 
-        # Open Workspace Button
         self._btn_workspace = PrimaryPushButton("Open Workspace", self, FluentIcon.FOLDER)
         self._btn_workspace.setToolTip("Open detailed file table for this job")
         self._btn_workspace.clicked.connect(lambda: self.open_workspace_clicked.emit(self.job.id))
@@ -173,28 +187,34 @@ class JobOverviewCard(CardWidget):
         path_layout.setHorizontalSpacing(12)
         path_layout.setVerticalSpacing(4)
 
-        path_layout.addWidget(StrongBodyLabel("Source:", self), 0, 0)
+        lbl_src = StrongBodyLabel("Source:", self)
+        lbl_src.setStyleSheet("color: #475569; font-size: 12px;")
+        path_layout.addWidget(lbl_src, 0, 0)
+
         self._src_label = BodyLabel(self.job.source_folder, self)
-        self._src_label.setStyleSheet("color: #444444;")
+        self._src_label.setStyleSheet("color: #1E293B; font-size: 12px;")
         path_layout.addWidget(self._src_label, 0, 1)
 
-        path_layout.addWidget(StrongBodyLabel("Destination:", self), 1, 0)
+        lbl_dst = StrongBodyLabel("Destination:", self)
+        lbl_dst.setStyleSheet("color: #475569; font-size: 12px;")
+        path_layout.addWidget(lbl_dst, 1, 0)
+
         self._dst_label = BodyLabel(self.job.destination_folder, self)
-        self._dst_label.setStyleSheet("color: #444444;")
+        self._dst_label.setStyleSheet("color: #1E293B; font-size: 12px;")
         path_layout.addWidget(self._dst_label, 1, 1)
 
         path_layout.setColumnStretch(1, 1)
         layout.addLayout(path_layout)
 
-        # ── Bottom Row: Status Pill Counters ──
+        # ── Bottom Row: Corporate Status Metric Pills ──
         stats_layout = QHBoxLayout()
         stats_layout.setSpacing(8)
 
-        self._pill_detected = self._create_stat_pill("Detected", "0", "#0078D4")
-        self._pill_processing = self._create_stat_pill("Processing", "0", "#D83B01")
-        self._pill_waiting = self._create_stat_pill("Waiting Window", "0", "#69797E")
-        self._pill_completed = self._create_stat_pill("Completed", "0", "#107C10")
-        self._pill_failed = self._create_stat_pill("Failed", "0", "#C42B1C")
+        self._pill_detected = self._create_stat_pill("Detected", "0", "#0067C0", "#F0F6FF", "#D0E1FD")
+        self._pill_processing = self._create_stat_pill("Processing", "0", "#B45309", "#FFFBEB", "#FDE68A")
+        self._pill_waiting = self._create_stat_pill("Waiting for Window", "0", "#475569", "#F8FAFC", "#E2E8F0")
+        self._pill_completed = self._create_stat_pill("Completed", "0", "#15803D", "#F0FDF4", "#BBF7D0")
+        self._pill_failed = self._create_stat_pill("Failed", "0", "#B91C1C", "#FEF2F2", "#FECACA")
 
         stats_layout.addWidget(self._pill_detected)
         stats_layout.addWidget(self._pill_processing)
@@ -205,79 +225,156 @@ class JobOverviewCard(CardWidget):
 
         layout.addLayout(stats_layout)
 
-    def _create_stat_pill(self, label: str, val: str, color: str) -> QWidget:
+        # ── Progress Bar Row (Live Progress Indicator) ──
+        self._progress_container = QWidget(self)
+        prog_layout = QVBoxLayout(self._progress_container)
+        prog_layout.setContentsMargins(0, 4, 0, 0)
+        prog_layout.setSpacing(3)
+
+        prog_header = QHBoxLayout()
+        self._progress_label = CaptionLabel("Transfer in Progress...", self._progress_container)
+        self._progress_label.setStyleSheet("color: #0067C0; font-size: 11px; font-weight: 600;")
+        self._progress_percent = CaptionLabel("0%", self._progress_container)
+        self._progress_percent.setStyleSheet("color: #475569; font-size: 11px; font-weight: 600;")
+        prog_header.addWidget(self._progress_label)
+        prog_header.addStretch()
+        prog_header.addWidget(self._progress_percent)
+        prog_layout.addLayout(prog_header)
+
+        self._progress_bar = ProgressBar(self._progress_container)
+        self._progress_bar.setFixedHeight(6)
+        self._progress_bar.setValue(0)
+        prog_layout.addWidget(self._progress_bar)
+
+        self._progress_container.hide()
+        layout.addWidget(self._progress_container)
+
+    def _create_stat_pill(
+        self, label: str, val: str, text_color: str, bg_color: str, border_color: str
+    ) -> QWidget:
         pill = QFrame(self)
         pill.setStyleSheet(f"""
             QFrame {{
-                background-color: {color}15;
-                border: 1px solid {color}40;
-                border-radius: 6px;
-                padding: 2px 8px;
+                background-color: {bg_color};
+                border: 1px solid {border_color};
+                border-radius: 4px;
             }}
         """)
         p_layout = QHBoxLayout(pill)
-        p_layout.setContentsMargins(6, 3, 6, 3)
+        p_layout.setContentsMargins(8, 4, 8, 4)
         p_layout.setSpacing(6)
 
         v_lbl = StrongBodyLabel(val, pill)
-        v_lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
+        v_lbl.setStyleSheet(f"color: {text_color}; font-weight: 700; font-size: 12px;")
+
         lbl = CaptionLabel(label, pill)
-        lbl.setStyleSheet(f"color: {color};")
+        lbl.setStyleSheet(f"color: {text_color}; font-size: 11px; font-weight: 500;")
 
         p_layout.addWidget(v_lbl)
         p_layout.addWidget(lbl)
         pill.val_label = v_lbl
         return pill
 
-    def update_status(self, is_monitoring: bool, in_window: bool = True):
-        self._is_monitoring = is_monitoring
-        if is_monitoring:
-            self._btn_toggle_monitor.setText("Stop Monitoring")
-            self._btn_toggle_monitor.setIcon(FluentIcon.PAUSE)
-
-            if self.job.schedule_mode == "window":
-                if in_window:
-                    self._status_badge.setText("● ACTIVE (In Window)")
-                    self._status_badge.setStyleSheet("""
-                        background-color: #DFF6DD;
-                        color: #107C10;
-                        padding: 3px 10px;
-                        border-radius: 6px;
-                        font-weight: bold;
-                        font-size: 11px;
-                    """)
-                else:
-                    self._status_badge.setText("⏳ WAITING (Outside Window)")
-                    self._status_badge.setStyleSheet("""
-                        background-color: #FFF4CE;
-                        color: #795B00;
-                        padding: 3px 10px;
-                        border-radius: 6px;
-                        font-weight: bold;
-                        font-size: 11px;
-                    """)
+    def update_progress(self, phase: str, current: int, total: int):
+        """Update live progress bar and label for this job."""
+        self._progress_container.show()
+        if total > 0:
+            pct = int((current / total) * 100)
+            pct = max(0, min(100, pct))
+            self._progress_bar.setValue(pct)
+            self._progress_percent.setText(f"{pct}%")
+            if phase == "compressing":
+                self._progress_label.setText(f"Compressing Archive ({pct}%)")
+            elif phase == "copy":
+                cur_mb = current / (1024 * 1024)
+                tot_mb = total / (1024 * 1024)
+                self._progress_label.setText(f"Transferring Archive ({cur_mb:.1f} MB / {tot_mb:.1f} MB)")
+            elif phase == "hashing":
+                self._progress_label.setText(f"Verifying SHA-256 Checksum ({pct}%)")
             else:
-                self._status_badge.setText("● MONITORING")
-                self._status_badge.setStyleSheet("""
-                    background-color: #DFF6DD;
-                    color: #107C10;
-                    padding: 3px 10px;
-                    border-radius: 6px;
-                    font-weight: bold;
-                    font-size: 11px;
-                """)
-        else:
-            self._btn_toggle_monitor.setText("Start Monitoring")
-            self._btn_toggle_monitor.setIcon(FluentIcon.PLAY)
-            self._status_badge.setText("○ IDLE / STOPPED")
+                self._progress_label.setText(f"Processing ({phase})...")
+
+    def update_status(self, execution_state: str):
+        """Update job status badge according to the sequential execution state."""
+        state = execution_state.upper()
+        if state == "TRANSFERRING":
+            self._status_badge.setText("TRANSFERRING")
             self._status_badge.setStyleSheet("""
-                background-color: #F3F3F3;
-                color: #666666;
+                background-color: #EFF6FF;
+                color: #1D4ED8;
+                border: 1px solid #BFDBFE;
                 padding: 3px 10px;
-                border-radius: 6px;
-                font-weight: bold;
+                border-radius: 4px;
+                font-weight: 600;
                 font-size: 11px;
             """)
+            self._btn_toggle_monitor.setText("Stop Monitoring")
+            self._btn_toggle_monitor.setIcon(FluentIcon.PAUSE)
+            self._progress_container.show()
+
+        elif state == "QUEUED":
+            self._status_badge.setText("QUEUED (IN LINE)")
+            self._status_badge.setStyleSheet("""
+                background-color: #FFFBEB;
+                color: #B45309;
+                border: 1px solid #FDE68A;
+                padding: 3px 10px;
+                border-radius: 4px;
+                font-weight: 600;
+                font-size: 11px;
+            """)
+            self._btn_toggle_monitor.setText("Stop Monitoring")
+            self._btn_toggle_monitor.setIcon(FluentIcon.PAUSE)
+            self._progress_container.show()
+            self._progress_bar.setValue(0)
+            self._progress_label.setText("Queued in Line — Waiting for previous transfer to complete...")
+            self._progress_percent.setText("In Queue")
+
+        elif state in ("MONITORING", "IN_WINDOW"):
+            label = "MONITORING (IN WINDOW)" if state == "IN_WINDOW" else "MONITORING"
+            self._status_badge.setText(label)
+            self._status_badge.setStyleSheet("""
+                background-color: #F0FDF4;
+                color: #15803D;
+                border: 1px solid #BBF7D0;
+                padding: 3px 10px;
+                border-radius: 4px;
+                font-weight: 600;
+                font-size: 11px;
+            """)
+            self._btn_toggle_monitor.setText("Stop Monitoring")
+            self._btn_toggle_monitor.setIcon(FluentIcon.PAUSE)
+            self._progress_container.hide()
+
+        elif state == "OUTSIDE_WINDOW":
+            self._status_badge.setText("WAITING (OUTSIDE WINDOW)")
+            self._status_badge.setStyleSheet("""
+                background-color: #FFFBEB;
+                color: #92400E;
+                border: 1px solid #FDE68A;
+                padding: 3px 10px;
+                border-radius: 4px;
+                font-weight: 600;
+                font-size: 11px;
+            """)
+            self._btn_toggle_monitor.setText("Stop Monitoring")
+            self._btn_toggle_monitor.setIcon(FluentIcon.PAUSE)
+            self._progress_container.hide()
+
+        else:  # IDLE / STOPPED
+            self._status_badge.setText("IDLE / STOPPED")
+            self._status_badge.setStyleSheet("""
+                background-color: #F3F4F6;
+                color: #4B5563;
+                border: 1px solid #E5E7EB;
+                padding: 3px 10px;
+                border-radius: 4px;
+                font-weight: 600;
+                font-size: 11px;
+            """)
+            self._btn_toggle_monitor.setText("Start Monitoring")
+            self._btn_toggle_monitor.setIcon(FluentIcon.PLAY)
+            self._progress_container.hide()
 
     def update_counts(self, stats: dict[str, int]):
         self._pill_detected.val_label.setText(str(stats.get("DETECTED", 0)))
@@ -289,8 +386,8 @@ class JobOverviewCard(CardWidget):
 
 class MainDashboardWidget(QWidget):
     """
-    Top-level Main Dashboard widget showing all jobs, global KPIs,
-    and unified system notification feed.
+    Corporate Main Dashboard interface showing all configured transfer jobs,
+    global system KPIs, and live activity stream.
     """
 
     add_job_requested = Signal()
@@ -331,9 +428,9 @@ class MainDashboardWidget(QWidget):
 
         self._title_label = TitleLabel("Main Dashboard", container)
         self._subtitle_label = BodyLabel(
-            "System Overview & Central Control for all Transfer Jobs", container
+            "System Overview & Multi-Job Central Control", container
         )
-        self._subtitle_label.setStyleSheet("color: #666666;")
+        self._subtitle_label.setStyleSheet("color: #616161; font-size: 13px;")
 
         header_text_layout.addWidget(self._title_label)
         header_text_layout.addWidget(self._subtitle_label)
@@ -359,13 +456,13 @@ class MainDashboardWidget(QWidget):
 
         self._content_layout.addLayout(header_layout)
 
-        # ── KPI Overview Row ──
+        # ── Corporate KPI Row ──
         kpi_layout = QHBoxLayout()
         kpi_layout.setSpacing(12)
 
         self._kpi_jobs = OverviewKpiCard("Total Jobs", "0", "Configured jobs", "#0078D4", container)
         self._kpi_monitoring = OverviewKpiCard("Active Monitors", "0", "Currently running", "#107C10", container)
-        self._kpi_transferred = OverviewKpiCard("Total Transferred", "0", "Files completed", "#0099BC", container)
+        self._kpi_transferred = OverviewKpiCard("Files Transferred", "0", "Completed transfers", "#0099BC", container)
         self._kpi_issues = OverviewKpiCard("System Issues", "0", "Failures & conflicts", "#C42B1C", container)
 
         kpi_layout.addWidget(self._kpi_jobs)
@@ -386,12 +483,12 @@ class MainDashboardWidget(QWidget):
         self._jobs_container.setSpacing(12)
         self._content_layout.addLayout(self._jobs_container)
 
-        self._empty_label = BodyLabel("No transfer jobs configured. Click '+ Add Job' above to get started.", container)
+        self._empty_label = BodyLabel("No transfer jobs configured. Click 'Add Job' above to get started.", container)
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setStyleSheet("color: #888888; padding: 40px;")
+        self._empty_label.setStyleSheet("color: #7A7A7A; padding: 40px;")
         self._jobs_container.addWidget(self._empty_label)
 
-        # ── Live Activity & Notifications Stream ──
+        # ── Activity & Transfer Feed ──
         activity_header_layout = QHBoxLayout()
         activity_title = SubtitleLabel("System Activity & Transfer Feed", container)
         activity_header_layout.addWidget(activity_title)
@@ -405,7 +502,7 @@ class MainDashboardWidget(QWidget):
 
         self._activity_table = TableWidget(container)
         self._activity_table.setColumnCount(4)
-        self._activity_table.setHorizontalHeaderLabels(["Timestamp", "Job", "Type", "Message"])
+        self._activity_table.setHorizontalHeaderLabels(["Timestamp", "Job", "Level", "Message"])
         self._activity_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self._activity_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self._activity_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -418,19 +515,20 @@ class MainDashboardWidget(QWidget):
     def set_jobs(
         self,
         jobs: list[TransferJob],
-        job_stats: dict[str, dict[str, int]],
-        monitoring_states: Optional[dict[str, bool]] = None,
-        window_states: Optional[dict[str, bool]] = None,
+        job_stats: Optional[dict[str, dict[str, int]]] = None,
+        execution_states: Optional[dict[str, str]] = None,
     ) -> None:
-        """Update all job cards and recalculate global KPIs."""
-        mon_states = monitoring_states or {}
-        win_states = window_states or {}
+        """Update job overview cards in place without destroying and recreating widgets."""
+        job_stats = job_stats or {}
+        states = execution_states or {}
+        job_ids = {j.id for j in jobs}
 
-        # Clear existing cards
-        for card in list(self._job_cards.values()):
-            self._jobs_container.removeWidget(card)
-            card.deleteLater()
-        self._job_cards.clear()
+        # Remove cards for jobs that no longer exist
+        for jid in list(self._job_cards.keys()):
+            if jid not in job_ids:
+                card = self._job_cards.pop(jid)
+                self._jobs_container.removeWidget(card)
+                card.deleteLater()
 
         if not jobs:
             self._empty_label.show()
@@ -447,47 +545,63 @@ class MainDashboardWidget(QWidget):
         active_monitors = 0
 
         for job in jobs:
-            card = JobOverviewCard(job, self)
-            card.open_workspace_clicked.connect(self.open_workspace_requested.emit)
-            card.edit_clicked.connect(self.edit_job_requested.emit)
-            card.delete_clicked.connect(self.delete_job_requested.emit)
-            card.sync_clicked.connect(self.sync_job_requested.emit)
-            card.toggle_monitor_clicked.connect(self.toggle_job_monitoring_requested.emit)
+            state = states.get(job.id, "IDLE")
+            stats = job_stats.get(job.id, {})
 
-            is_mon = mon_states.get(job.id, False)
-            in_win = win_states.get(job.id, True)
-            card.update_status(is_mon, in_win)
+            if job.id in self._job_cards:
+                card = self._job_cards[job.id]
+                card.job = job
+                card._name_label.setText(job.name)
+                card._src_label.setText(job.source_folder)
+                card._dst_label.setText(job.destination_folder)
+                schedule_text = (
+                    f"Window: {job.window_start} - {job.window_end}"
+                    if job.schedule_mode == "window"
+                    else "Continuous Mode"
+                )
+                card._schedule_badge.setText(schedule_text)
+                card.update_status(state)
+                card.update_counts(stats)
+            else:
+                card = JobOverviewCard(job, self)
+                card.open_workspace_clicked.connect(self.open_workspace_requested.emit)
+                card.edit_clicked.connect(self.edit_job_requested.emit)
+                card.delete_clicked.connect(self.delete_job_requested.emit)
+                card.sync_clicked.connect(self.sync_job_requested.emit)
+                card.toggle_monitor_clicked.connect(self.toggle_job_monitoring_requested.emit)
+                card.update_status(state)
+                card.update_counts(stats)
 
-            if is_mon:
+                self._job_cards[job.id] = card
+                self._jobs_container.addWidget(card)
+
+            if state not in ("IDLE", "IDLE / STOPPED"):
                 active_monitors += 1
 
-            stats = job_stats.get(job.id, {})
-            card.update_counts(stats)
             total_transferred += stats.get("COMPLETED", 0)
             total_issues += stats.get("FAILED", 0) + stats.get("CONFLICT", 0)
 
-            self._job_cards[job.id] = card
-            self._jobs_container.addWidget(card)
-
         self._kpi_jobs.set_value(str(len(jobs)), f"{len(jobs)} configured jobs")
-        self._kpi_monitoring.set_value(str(active_monitors), f"{active_monitors} currently monitoring")
+        self._kpi_monitoring.set_value(str(active_monitors), f"{active_monitors} active monitors")
         self._kpi_transferred.set_value(str(total_transferred), "Files completed")
         self._kpi_issues.set_value(str(total_issues), "Failures or conflicts")
 
-    def update_job_status(
-        self, job_id: str, is_monitoring: bool, in_window: bool = True
-    ) -> None:
+    def update_job_status(self, job_id: str, execution_state: str) -> None:
         if job_id in self._job_cards:
-            self._job_cards[job_id].update_status(is_monitoring, in_window)
+            self._job_cards[job_id].update_status(execution_state)
 
     def update_job_counts(self, job_id: str, stats: dict[str, int]) -> None:
         if job_id in self._job_cards:
             self._job_cards[job_id].update_counts(stats)
 
+    def update_job_progress(self, job_id: str, phase: str, current: int, total: int) -> None:
+        if job_id in self._job_cards:
+            self._job_cards[job_id].update_progress(phase, current, total)
+
     def add_activity_event(
         self, level: str, message: str, job_name: str = "System"
     ) -> None:
-        """Add a new live event to the activity table."""
+        """Add a professional event entry to the live activity feed."""
         row = 0
         self._activity_table.insertRow(row)
 
@@ -496,14 +610,17 @@ class MainDashboardWidget(QWidget):
         self._activity_table.setItem(row, 1, QTableWidgetItem(job_name))
 
         type_item = QTableWidgetItem(level.upper())
-        if level.upper() in ("ERROR", "FAILED"):
-            type_item.setForeground(QColor("#C42B1C"))
-        elif level.upper() in ("SUCCESS", "COMPLETED"):
-            type_item.setForeground(QColor("#107C10"))
-        elif level.upper() in ("WARNING", "CONFLICT"):
-            type_item.setForeground(QColor("#D83B01"))
+        lvl_upper = level.upper()
+        if lvl_upper in ("ERROR", "FAILED"):
+            type_item.setForeground(QColor("#B91C1C"))
+        elif lvl_upper in ("SUCCESS", "COMPLETED"):
+            type_item.setForeground(QColor("#15803D"))
+        elif lvl_upper in ("WARNING", "CONFLICT"):
+            type_item.setForeground(QColor("#B45309"))
+        elif lvl_upper == "TRANSFER":
+            type_item.setForeground(QColor("#1D4ED8"))
         else:
-            type_item.setForeground(QColor("#0078D4"))
+            type_item.setForeground(QColor("#0067C0"))
 
         self._activity_table.setItem(row, 2, type_item)
         self._activity_table.setItem(row, 3, QTableWidgetItem(message))

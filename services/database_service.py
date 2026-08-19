@@ -12,9 +12,10 @@ and closes its own connection so the service can be called from any thread.
 from __future__ import annotations
 
 import logging
-import sqlite3
-from datetime import datetime
 from pathlib import Path
+import sqlite3
+import sys
+from datetime import datetime
 from typing import Optional
 
 from core.models import FileStatus, TransferJob, TransferRecord
@@ -23,6 +24,12 @@ logger = logging.getLogger("app")
 
 # ISO 8601 format for datetime serialization in SQLite
 _DT_FMT = "%Y-%m-%d %H:%M:%S.%f"
+
+
+def get_app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 class DatabaseService:
@@ -36,7 +43,7 @@ class DatabaseService:
     def __init__(self, db_path: str | Path | None = None):
         if db_path is None:
             db_path = (
-                Path(__file__).resolve().parent.parent
+                get_app_dir()
                 / "database"
                 / "transfer_history.db"
             )
@@ -335,6 +342,17 @@ class DatabaseService:
                    WHERE job_id = ? AND source_path = ?
                    ORDER BY detected_at DESC LIMIT 1""",
                 (job_id, source_path),
+            ).fetchone()
+            return self._row_to_record(row) if row else None
+        finally:
+            conn.close()
+
+    def get_record_by_id(self, record_id: str) -> Optional[TransferRecord]:
+        """Fetch a specific transfer record by its unique ID."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM transfer_records WHERE id = ?", (record_id,)
             ).fetchone()
             return self._row_to_record(row) if row else None
         finally:

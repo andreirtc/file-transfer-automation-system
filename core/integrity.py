@@ -28,7 +28,7 @@ class IntegrityVerifier:
     def __init__(
         self,
         algorithm: str = "sha256",
-        chunk_size: int = 65536,
+        chunk_size: int = 1048576,
     ):
         self._algorithm = algorithm
         self._chunk_size = chunk_size
@@ -52,9 +52,11 @@ class IntegrityVerifier:
             FileNotFoundError: If the file does not exist.
             OSError: If the file cannot be read.
         """
+        import time
         path = Path(file_path)
         total_size = path.stat().st_size
         bytes_read = 0
+        last_callback_time = 0.0
 
         h = hashlib.new(self._algorithm)
 
@@ -66,7 +68,10 @@ class IntegrityVerifier:
                 h.update(chunk)
                 bytes_read += len(chunk)
                 if progress_callback:
-                    progress_callback(bytes_read, total_size)
+                    now = time.time()
+                    if bytes_read == total_size or (now - last_callback_time) >= 0.1:
+                        last_callback_time = now
+                        progress_callback(bytes_read, total_size)
 
         return h.hexdigest()
 
