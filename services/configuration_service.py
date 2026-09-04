@@ -22,6 +22,73 @@ def get_app_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+_DEFAULT_CHECKLIST_SYSTEMS: list[dict[str, Any]] = [
+    {
+        "no": 1,
+        "job_name": "TFS42PROD",
+        "pattern": "TFS42PROD_<YYYYMMDD>",
+        "file_type": "RAR",
+        "description": "Pre-Batch Clean Backup",
+        "expected_location": "",
+    },
+    {
+        "no": 2,
+        "job_name": "CSE",
+        "pattern": "CSE_BACKUP_<MM-DD-YYYY>",
+        "file_type": "RAR",
+        "description": "PSR (CSE) Backup",
+        "expected_location": "",
+    },
+    {
+        "no": 3,
+        "job_name": "TFA",
+        "pattern": "TFA_<YYYYMMDD>",
+        "file_type": "RAR",
+        "description": "TFA Application Backup",
+        "expected_location": "",
+    },
+    {
+        "no": 4,
+        "job_name": "COGNOS",
+        "pattern": "COGNOS_<YYYYMMDD>",
+        "file_type": "RAR",
+        "description": "Cognos Backup",
+        "expected_location": "",
+    },
+    {
+        "no": 5,
+        "job_name": "SAP",
+        "pattern": "SAP_BACKUP_<MM-DD-YYYY>",
+        "file_type": "RAR",
+        "description": "SAP Backup",
+        "expected_location": "",
+    },
+    {
+        "no": 6,
+        "job_name": "GOCANVAS",
+        "pattern": "GOCANVAS_BACKUP_<YYYYMMDD>",
+        "file_type": "RAR",
+        "description": "GoCanvas Backup",
+        "expected_location": "",
+    },
+    {
+        "no": 7,
+        "job_name": "DPPS",
+        "pattern": "DPPS_BACKUP_<YYYYMMDD>",
+        "file_type": "FILE",
+        "description": "DPPS Backup",
+        "expected_location": "",
+    },
+    {
+        "no": 8,
+        "job_name": "QMS",
+        "pattern": "QMS_BACKUP_<YYYYMMDD>",
+        "file_type": "FILE",
+        "description": "QMS Backup",
+        "expected_location": "",
+    },
+]
+
 # Default configuration values — used when config.json is missing or incomplete
 _DEFAULTS: dict[str, Any] = {
     "stability_check_interval": 5,       # seconds between stability checks
@@ -44,6 +111,11 @@ _DEFAULTS: dict[str, Any] = {
     "zip_password": "password123",       # default password for zip files
     "max_concurrent_transfers": 1,       # max simultaneous job batch transfers (1=sequential, 0=unlimited)
     "transfer_threads": 4,               # parallel file transfer threads per job (/MT)
+    "checklist_systems": _DEFAULT_CHECKLIST_SYSTEMS, # master daily backup checklist systems
+    "report_checked_by": "Philip M. Bayudan",        # default supervisor sign-off name
+    "report_repository_tag": "TFSPH-PRIMARY-REPO",   # default backup repository tag
+    "report_auto_generate": True,                    # auto generate checklist report upon window end
+    "report_operator_name": "",                      # custom operator name (blank = Windows user)
 }
 
 
@@ -205,6 +277,49 @@ class ConfigurationService:
     @property
     def transfer_threads(self) -> int:
         return self.get_int("transfer_threads", 4)
+
+    @property
+    def checklist_systems(self) -> list[dict[str, Any]]:
+        systems = self._data.get("checklist_systems")
+        if isinstance(systems, list) and systems:
+            return list(systems)
+        return list(_DEFAULT_CHECKLIST_SYSTEMS)
+
+    @checklist_systems.setter
+    def checklist_systems(self, val: list[dict[str, Any]]) -> None:
+        self.set("checklist_systems", val)
+
+    @property
+    def report_checked_by(self) -> str:
+        return self.get_str("report_checked_by", "Philip M. Bayudan")
+
+    @report_checked_by.setter
+    def report_checked_by(self, val: str) -> None:
+        self.set("report_checked_by", val)
+
+    @property
+    def report_repository_tag(self) -> str:
+        return self.get_str("report_repository_tag", "TFSPH-PRIMARY-REPO")
+
+    @report_repository_tag.setter
+    def report_repository_tag(self, val: str) -> None:
+        self.set("report_repository_tag", val)
+
+    @property
+    def report_auto_generate(self) -> bool:
+        return self.get_bool("report_auto_generate", True)
+
+    @report_auto_generate.setter
+    def report_auto_generate(self, val: bool) -> None:
+        self.set("report_auto_generate", val)
+
+    @property
+    def report_operator_name(self) -> str:
+        return self.get_str("report_operator_name", "")
+
+    @report_operator_name.setter
+    def report_operator_name(self, val: str) -> None:
+        self.set("report_operator_name", val)
 
     @property
     def all_settings(self) -> dict[str, Any]:

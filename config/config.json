@@ -18,5 +18,83 @@
     "batch_compression_enabled": true,
     "zip_password": "password123",
     "max_concurrent_transfers": 3,
-    "transfer_threads": 8
+    "transfer_threads": 8,
+    "checklist_systems": [
+        {
+            "no": 1,
+            "job_name": "TFS42PROD",
+            "linked_job": "001",
+            "pattern": "TFS42PROD_<YYYYMMDD>",
+            "file_type": "RAR",
+            "description": "Pre-Batch Clean Backup",
+            "expected_location": ""
+        },
+        {
+            "no": 2,
+            "job_name": "CSE",
+            "linked_job": "002",
+            "pattern": "CSE_BACKUP_<MM-DD-YYYY>",
+            "file_type": "RAR",
+            "description": "PSR (CSE) Backup",
+            "expected_location": ""
+        },
+        {
+            "no": 3,
+            "job_name": "TFA",
+            "linked_job": "003",
+            "pattern": "TFA_<YYYYMMDD>",
+            "file_type": "RAR",
+            "description": "TFA Application Backup",
+            "expected_location": ""
+        },
+        {
+            "no": 4,
+            "job_name": "COGNOS",
+            "linked_job": "004",
+            "pattern": "COGNOS_<YYYYMMDD>",
+            "file_type": "RAR",
+            "description": "Cognos Backup",
+            "expected_location": ""
+        },
+        {
+            "no": 5,
+            "job_name": "SAP",
+            "linked_job": "005",
+            "pattern": "SAP_BACKUP_<MM-DD-YYYY>",
+            "file_type": "RAR",
+            "description": "SAP Backup",
+            "expected_location": ""
+        },
+        {
+            "no": 6,
+            "job_name": "GOCANVAS",
+            "linked_job": "006",
+            "pattern": "GOCANVAS_BACKUP_<YYYYMMDD>",
+            "file_type": "RAR",
+            "description": "GoCanvas Backup",
+            "expected_location": ""
+        },
+        {
+            "no": 7,
+            "job_name": "DPPS",
+            "linked_job": "",
+            "pattern": "DPPS_BACKUP_<YYYYMMDD>",
+            "file_type": "FILE",
+            "description": "DPPS Backup",
+            "expected_location": ""
+        },
+        {
+            "no": 8,
+            "job_name": "QMS",
+            "linked_job": "",
+            "pattern": "QMS_BACKUP_<YYYYMMDD>",
+            "file_type": "FILE",
+            "description": "QMS Backup",
+            "expected_location": ""
+        }
+    ],
+    "report_checked_by": "Philip M. Bayudan",
+    "report_repository_tag": "TFSPH-PRIMARY-REPO",
+    "report_auto_generate": true,
+    "report_operator_name": ""
 }

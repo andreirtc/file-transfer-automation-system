@@ -12,7 +12,11 @@ dist/
 build/
 
 # Database (auto-generated)
-database/*.db
+database/*.db*
+
+# Generated Reports
+reports/*.xlsx
+!reports/.gitkeep
 
 # Logs (auto-generated)
 logs/

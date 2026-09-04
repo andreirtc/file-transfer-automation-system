@@ -16,9 +16,9 @@ import logging
 import sqlite3
 import sys
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from core.models import FileStatus, TransferJob, TransferRecord
 
@@ -417,6 +417,35 @@ class DatabaseService:
                    ORDER BY transfer_completed ASC""",
                 (job_id, days),
             ).fetchall()
+            return [self._row_to_record(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_records_by_date(
+        self,
+        target_date: date | str,
+        job_id: Optional[str] = None,
+    ) -> list[TransferRecord]:
+        """
+        Return transfer records completed or detected on the given date (YYYY-MM-DD).
+        """
+        if hasattr(target_date, "strftime"):
+            date_prefix = target_date.strftime("%Y-%m-%d")
+        else:
+            date_prefix = str(target_date)[:10]
+
+        conn = self._connect()
+        try:
+            query = """
+                SELECT * FROM transfer_records
+                WHERE (transfer_completed LIKE ? OR (transfer_completed IS NULL AND detected_at LIKE ?))
+            """
+            params: list[Any] = [f"{date_prefix}%", f"{date_prefix}%"]
+            if job_id:
+                query += " AND job_id = ?"
+                params.append(job_id)
+            query += " ORDER BY transfer_completed DESC, detected_at DESC"
+            rows = conn.execute(query, params).fetchall()
             return [self._row_to_record(r) for r in rows]
         finally:
             conn.close()

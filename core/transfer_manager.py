@@ -1780,6 +1780,32 @@ class TransferManager(QObject):
         # Automatically process the next queued job batch in pool
         self._dispatch_next_batch()
 
+        # Auto-generate corporate daily report if enabled and all batch transfers are done
+        if not self._active_workers and not self._transfer_queue:
+            if self._config.report_auto_generate:
+                import threading
+
+                def _bg_generate_report():
+                    try:
+                        from services.report_service import ReportService
+                        report_svc = ReportService(self._config, self._db)
+                        out_file = report_svc.generate_daily_report(datetime.now().date())
+                        if "_latest" in out_file.name:
+                            self.log_message.emit(
+                                "WARNING",
+                                f"Daily report auto-saved as '{out_file.name}' (primary file is currently locked open in Microsoft Excel)."
+                            )
+                        else:
+                            self.log_message.emit(
+                                "INFO",
+                                f"Daily backup checklist auto-updated: '{out_file.name}'"
+                            )
+                    except Exception as e:
+                        logger.warning("Automatic daily report generation failed: %s", e)
+                        self.log_message.emit("WARNING", f"Daily report auto-update failed: {e}")
+
+                threading.Thread(target=_bg_generate_report, name="AutoReportGenerator", daemon=True).start()
+
     # ──────────────────────────────────────────────
     # Controller Signal Forwarding
     # ──────────────────────────────────────────────

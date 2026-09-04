@@ -17,6 +17,11 @@ Designed with a high-performance Windows 11 Fluent interface optimized for high-
 - **Live 0-Second Progress Bars** — Precalculates batch byte sizes upfront and streams real-time stdout events (`PROGRESS_BYTES:X:Y`), updating job progress bars (`XX.X MB / YY.Y MB`) from millisecond 0.
 - **Incomplete File Protection & Windows Locks** — Actively tests file sizes and low-level Windows locks (`msvcrt.locking`) across consecutive stability cycles to guarantee incomplete, growing, or open files are never transferred prematurely.
 - **Scheduled Transfer Windows** — Supports continuous mode and scheduled transfer windows (e.g., overnight backups). Files accumulate safely during the day and automatically consolidate at the configured window end-time.
+- **Corporate Daily Backup Checklist & Executive Reporting** — Standardized daily report generator matching official TFSPH Excel templates (`templates/TFSPH_Daily_Backup_Checklist_Template.xlsx`). Automatically populates batch dates, monitored systems, aggregate file sizes, completion times, repository tags, and automated daily control checks.
+- **Automated SHA-256 Integrity Verification (Col I)** — Evaluates end-to-end cryptographic checksums and marks Column I as `Passed`, `Failed`, or `Not Applicable`.
+- **Linked Job Mapping & Multi-File Aggregation** — Maps development or staging jobs (`001`–`006`) to official corporate systems (`TFS42PROD`, `CSE`, etc.), aggregates file sizes across multi-file batches (`sum(r.file_size)`), and records the latest completion timestamp.
+- **Windows Excel File Lock Safeguard** — Automatically catches `[Errno 13] Permission denied` when workbooks are open in Microsoft Excel, writing to `..._latest.xlsx` fallback with in-app operator notifications.
+- **600ms Debounced UI Event Pipeline** — Buffers high-frequency transfer signals to keep UI smooth and prevent GUI lockups under 8-thread multi-job loads.
 - **Dual-Verified Source File Retention** — Configurable retention policy (1 to 365 days) that safely deletes source files only after confirming successful transfer, destination existence, and source presence.
 - **End-to-End SHA-256 Verification** — Every transferred file and archive is verified by computing and matching full cryptographic checksums before marking as completed.
 - **Safe Copy Strategy** — Writes to hidden temporary files first (`.filename.transfer_tmp`), verifies integrity, and atomically commits to the final destination path via `os.replace()`.
@@ -30,34 +35,35 @@ Designed with a high-performance Windows 11 Fluent interface optimized for high-
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                   Windows 11 Fluent UI (PySide6)                        │
-│  ┌─────────────────────────┐  ┌──────────────────────┐  ┌────────────┐  │
-│  │ Main Dashboard          │  │ Job Workspace        │  │ Admin Docs │  │
-│  │ (KPIs, Multi-Job Cards, │  │ (File-Level Table,   │  │ (Topics &  │  │
-│  │  Live Activity Feed)    │  │  Override Actions)   │  │  FAQ Guide)│  │
-│  └────────────┬────────────┘  └──────────┬───────────┘  └─────┬──────┘  │
-└───────────────┼──────────────────────────┼────────────────────┼─────────┘
-                │ Qt Multi-Job Signals & Throttled Event Bus    │
-┌───────────────┴──────────────────────────┴────────────────────┴─────────┐
-│                    Transfer Manager (Central Orchestrator)              │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │ Concurrent Worker Pool & FIFO Queue (max_concurrent_transfers: 3) │  │
-│  └─────────────────────────────────┬─────────────────────────────────┘  │
-│                                    │ Dispatches Active Jobs             │
-│  ┌─────────────────────────────────┴─────────────────────────────────┐  │
-│  │ Parallel TransferWorker Pool (QThreads)                           │  │
-│  │  ├── Isolated Compression Worker (Subprocess: pyzipper AES-256)   │  │
-│  │  ├── 500ms Mid-Compression Deletion Watcher & Auto-Restart        │  │
-│  │  ├── Transfer Engine (Throttled Chunked Copy + Atomic Rename)     │  │
-│  │  └── Integrity Verifier (Chunked SHA-256 Hash Verification)       │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-┌────────────────────────────────────┴────────────────────────────────────┐
-│ Multi-Job Controllers: Watchdog Monitors + Parallel Reconciliation      │
-│ Persistence: Thread-Safe SQLite WAL Database + JSON Configuration       │
-└─────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│                          Windows 11 Fluent UI (PySide6)                           │
+│  ┌────────────────────────┐  ┌────────────────────┐  ┌─────────────┐  ┌────────┐  │
+│  │ Main Dashboard         │  │ Job Workspace      │  │ Daily Report│  │ Docs   │  │
+│  │ (KPIs, Multi-Job Cards,│  │ (File Table,       │  │ (Checklist, │  │ (IT    │  │
+│  │  Live Activity Feed)   │  │  Override Actions) │  │  Live Table)│  │ Manual)│  │
+│  └───────────┬────────────┘  └─────────┬──────────┘  └──────┬──────┘  └───┬────┘  │
+└──────────────┼─────────────────────────┼────────────────────┼─────────────┼───────┘
+               │ Qt Multi-Job Signals & Debounced Event Bus (600ms)         │
+┌──────────────┴─────────────────────────┴────────────────────┴─────────────┴───────┐
+│                       Transfer Manager (Central Orchestrator)                     │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐  │
+│  │ Concurrent Worker Pool & FIFO Queue (max_concurrent_transfers: 3)           │  │
+│  └──────────────────────────────────────┬──────────────────────────────────────┘  │
+│                                         │ Dispatches Active Jobs                  │
+│  ┌──────────────────────────────────────┴──────────────────────────────────────┐  │
+│  │ Parallel TransferWorker Pool (QThreads, 8 Threads Default)                  │  │
+│  │  ├── Isolated Compression Worker (Subprocess: pyzipper AES-256)             │  │
+│  │  ├── 500ms Mid-Compression Deletion Watcher & Auto-Restart                  │  │
+│  │  ├── Transfer Engine (Throttled Chunked Copy + Atomic Rename)               │  │
+│  │  └── Integrity Verifier (Chunked SHA-256 Hash Verification)                 │  │
+│  └─────────────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────┬─────────────────────────────────────────┘
+                                          │
+┌─────────────────────────────────────────┴─────────────────────────────────────────┐
+│ Report Service (openpyxl): Template Preservation, Dynamic Rows, Excel Lock Fallback│
+│ Multi-Job Controllers: Watchdog Monitors + Parallel Reconciliation                │
+│ Persistence: Thread-Safe SQLite WAL Database + JSON Configuration                 │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -94,6 +100,7 @@ Designed with a high-performance Windows 11 Fluent interface optimized for high-
   - `watchdog` >= 4.0 (OS Filesystem Event Monitoring)
   - `pyzipper` >= 0.3.6 (WinZip AES-256 Zip64 Encryption Engine)
   - `pyminizip` >= 0.2.6 (Fallback ZipCrypto Archive Compression)
+  - `openpyxl` >= 3.1.2 (Corporate Excel Checklist Processing & Template Generation)
   - `Pillow` >= 10.0 (High-Resolution Icon Rendering)
   - `pyinstaller` >= 6.0 (Standalone Binary Compilation)
   - `pytest` >= 8.0 (Automated Test Suite)
@@ -185,7 +192,7 @@ Configuration values are stored in `config/config.json` and accessible via the i
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `max_concurrent_transfers` | `3` | Maximum simultaneous job batch transfers (1 = sequential, 0 = unlimited). |
-| `transfer_threads` | `4` | Parallel file transfer threads per job for direct transfers (optimal for SMB). |
+| `transfer_threads` | `8` | Parallel file transfer threads per job for direct transfers (optimal for gigabit LAN / NVMe). |
 | `batch_compression_enabled` | `true` | Consolidates queued files into a password-protected ZIP archive. |
 | `zip_password` | `"password123"` | Default password for encrypted zip archives. |
 | `stability_check_interval` | `5` | Seconds between file stability checks. |
@@ -200,25 +207,31 @@ Configuration values are stored in `config/config.json` and accessible via the i
 | `network_drive_mode` | `true` | Optimizes polling parameters for shared network drives / UNC paths. |
 | `auto_cleanup_enabled` | `true` | Enables scheduled dual-verified deletion of old source files. |
 | `auto_cleanup_days` | `7` | Retention period in days before transferred source files are eligible for cleanup. |
+| `checklist_systems` | `[...]` (8 systems) | Monitored corporate systems array with job name, linked job alias, pattern, and description. |
+| `report_checked_by` | `"Philip M. Bayudan"` | Default supervisor name for checklist sign-off in Section 3. |
+| `report_repository_tag` | `"TFSPH-PRIMARY-REPO"` | Default backup repository identifier tag in corporate checklist. |
+| `report_auto_generate` | `true` | Automatically compiles and exports daily report workbook upon transfer completion. |
+| `report_operator_name` | `""` | Custom operator name override for Prepared By field (defaults to active Windows login). |
 
 ---
 
 ## Automated Test Suite
 
-The project includes an extensive test suite covering safety checks, hashing, compression, database concurrency, multi-job worker pools, and UI progress tracking.
+The project includes an extensive test suite covering safety checks, hashing, compression, database concurrency, multi-job worker pools, UI progress tracking, and corporate report generation.
 
 Run the test suite via `pytest`:
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/ -v
 ```
 
-**72 automated tests passing**:
+**81 automated tests passing**:
 - `tests/test_compression.py`: Batch compression, AES-256 encryption, mid-compression deletion handling, window end triggering, multi-job worker pool dispatching, and 0-second progress bar updates.
 - `tests/test_file_safety.py`: Stability detection, growing file handling, Windows lock checking, and preflight verification.
 - `tests/test_integrity.py`: SHA-256 deterministic hashing, corruption detection, and chunked verification.
 - `tests/test_transfer_engine.py`: Safe copy, atomic temp rename, destination creation, and conflict handling.
 - `tests/test_database.py`: Job persistence, transfer records, thread-safe concurrency, history queries, and stale-state cleanup.
 - `tests/test_transfer_manager.py`: Full pipeline integration, multi-job concurrent monitoring, and SMB disconnect resilience.
+- `tests/test_report.py`: Checklist data generation, corporate Excel template cloning, dynamic row expansion (8+ systems), multi-file size aggregation, linked job mapping, SHA-256 integrity mapping, and Excel lock fallback.
 
 ---
 

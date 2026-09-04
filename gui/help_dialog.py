@@ -133,7 +133,18 @@ class UserDocumentationDialog(MessageBoxBase):
                 <tr><td><code>CONFLICT</code></td><td>File with same name exists at destination with different size/date.</td></tr>
             </table>
 
-            <h2>7. IT Administrator Handbook & Troubleshooting</h2>
+            <h2>7. Corporate Daily Backup Checklist & Executive Reporting</h2>
+            <p>The system integrates an automated daily backup verification checklist aligned with corporate audit standards:</p>
+            <ul>
+                <li><b>Daily Report Page:</b> Accessible directly from the sidebar navigation. Allows selecting any date to view live transfer statistics, filenames, aggregated sizes, completion timestamps, and cryptographic integrity statuses.</li>
+                <li><b>Official Excel Template Integration:</b> Automatically generates and exports standardized Excel workbooks (<code>TFSPH_Daily_Backup_Checklist_YYYY-MM-DD.xlsx</code>) preserving official corporate styles, formulas, and sign-offs.</li>
+                <li><b>Automated SHA-256 Integrity Verification:</b> Evaluates end-to-end cryptographic checksums and marks Column I as <code>Passed</code>, <code>Failed</code>, or <code>Not Applicable</code>.</li>
+                <li><b>Linked Job Mapping:</b> Allows mapping test jobs (e.g., <code>001</code>–<code>006</code>) to corporate systems (<code>TFS42PROD</code>, <code>CSE</code>, <code>TFA</code>, etc.) for testing and staging agility.</li>
+                <li><b>Multi-File Aggregate Size & Latest Timestamps:</b> Sums all transferred file sizes for a job and selects the latest completion time.</li>
+                <li><b>Windows Excel File Lock Safeguard:</b> Automatically detects when the report is open in Microsoft Excel and writes to <code>..._latest.xlsx</code> fallback with an in-app operator alert, preventing <code>[Errno 13] Permission denied</code> errors.</li>
+            </ul>
+
+            <h2>8. IT Administrator Handbook & Troubleshooting</h2>
             <p>For complete step-by-step operating procedures, network share configuration, and practical troubleshooting scenarios, open the interactive <b>Documentation</b> page in the bottom-left sidebar.</p>
         </body>
         </html>

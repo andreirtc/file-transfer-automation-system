@@ -40,8 +40,10 @@ from gui.dialogs import (
 )
 from gui.help_dialog import UserDocumentationDialog
 from gui.docs_page import DocsPageWidget
+from gui.report_page import ReportPageWidget
 from services.configuration_service import ConfigurationService
 from services.database_service import DatabaseService
+from services.report_service import ReportService
 
 logger = logging.getLogger("app")
 
@@ -89,6 +91,16 @@ class MainWindow(MSFluentWindow):
         self._docs_page = DocsPageWidget(self)
         self._docs_page.setObjectName("DocumentationInterface")
 
+        self._report_service = ReportService(self._config, self._db)
+        self._report_page = ReportPageWidget(self._report_service, self._config, self)
+        self._report_page.setObjectName("DailyReportInterface")
+
+        # Debounced timer to refresh daily report without blocking high-frequency transfer loops
+        self._report_refresh_timer = QTimer(self)
+        self._report_refresh_timer.setSingleShot(True)
+        self._report_refresh_timer.setInterval(600)
+        self._report_refresh_timer.timeout.connect(self._refresh_report_page_safe)
+
         self._setup_navigation()
         self._connect_signals()
 
@@ -113,6 +125,14 @@ class MainWindow(MSFluentWindow):
             self._dashboard,
             FluentIcon.FOLDER,
             "Job Workspace",
+            position=NavigationItemPosition.TOP,
+        )
+
+        # 3. Daily Report (Corporate Backup Checklist)
+        self.addSubInterface(
+            self._report_page,
+            FluentIcon.DOCUMENT,
+            "Daily Report",
             position=NavigationItemPosition.TOP,
         )
 
@@ -144,7 +164,7 @@ class MainWindow(MSFluentWindow):
         # Bottom Actions & Documentation Interface
         self.navigationInterface.addItem(
             routeKey="logs",
-            icon=FluentIcon.DOCUMENT,
+            icon=FluentIcon.CODE,
             text="View Logs",
             onClick=self._on_view_logs,
             position=NavigationItemPosition.BOTTOM,
@@ -216,6 +236,10 @@ class MainWindow(MSFluentWindow):
         self._ui_window_timer.timeout.connect(self._check_window_transitions)
         self._ui_window_timer.start()
 
+        # Connect page navigation changes to keep views synchronized
+        if hasattr(self, "stackedWidget"):
+            self.stackedWidget.currentChanged.connect(self._on_stacked_widget_changed)
+
     # ──────────────────────────────────────────────
     # Initial setup & Refresh
     # ──────────────────────────────────────────────
@@ -271,6 +295,27 @@ class MainWindow(MSFluentWindow):
                 self._dashboard.update_statistics(stats)
 
         self._update_all_status_indicators()
+        self._schedule_report_refresh()
+
+    def _schedule_report_refresh(self):
+        """Debounce daily report refresh to avoid locking the UI during high-throughput batches."""
+        if hasattr(self, "_report_refresh_timer"):
+            self._report_refresh_timer.start(600)
+
+    def _refresh_report_page_safe(self):
+        """Execute debounced report refresh safely."""
+        if hasattr(self, "_report_page"):
+            try:
+                self._report_page._refresh_data()
+            except Exception as e:
+                logger.error("Safe report refresh failed: %s", e)
+
+    def _on_stacked_widget_changed(self, index: int):
+        """Ensure page data is freshly loaded when navigating between tabs."""
+        if hasattr(self, "stackedWidget") and hasattr(self, "_report_page"):
+            widget = self.stackedWidget.widget(index)
+            if widget == self._report_page:
+                self._refresh_report_page_safe()
 
     def _update_all_status_indicators(self):
         """Update live status badges, count pills, and KPIs on Main Dashboard and Job Workspace."""
@@ -570,6 +615,7 @@ class MainWindow(MSFluentWindow):
             self._dashboard.update_statistics(stats)
             self._main_dashboard.update_job_counts(record.job_id, stats)
             self._main_dashboard.update_job_status(record.job_id, self._manager.get_job_execution_state(record.job_id))
+            self._schedule_report_refresh()
 
     # ── Multi-job live Main Dashboard handlers ──
 
@@ -590,9 +636,11 @@ class MainWindow(MSFluentWindow):
 
     def _on_job_status_changed(self, job_id: str, execution_state: str):
         self._main_dashboard.update_job_status(job_id, execution_state)
+        self._schedule_report_refresh()
 
     def _on_job_transfer_completed(self, job_id: str, record_id: str, result: TransferResult):
         self._main_dashboard.update_job_status(job_id, self._manager.get_job_execution_state(job_id))
+        self._schedule_report_refresh()
 
     def _on_job_event(self, job_id: str, message: str):
         self._main_dashboard.update_job_event(job_id, message)
@@ -602,6 +650,7 @@ class MainWindow(MSFluentWindow):
 
     def _on_monitoring_changed(self, is_monitoring: bool):
         self._update_all_status_indicators()
+        self._schedule_report_refresh()
 
     def _on_conflict_detected(self, record: TransferRecord):
         dialog = ConflictDialog(record, self)

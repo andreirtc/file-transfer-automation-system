@@ -162,6 +162,7 @@ class DocsPageWidget(QWidget):
             ("8. Source File Cleanup & Retention", self._doc_cleanup()),
             ("9. IT Troubleshooting & Practical FAQ", self._doc_troubleshooting()),
             ("10. Admin Verification & Testing Guide", self._doc_testing_guide()),
+            ("11. Corporate Daily Backup Report Guide", self._doc_daily_report()),
         ]
 
         for title, _ in self._sections:
@@ -379,10 +380,21 @@ class DocsPageWidget(QWidget):
         <ul>
             <li><b>Zip Archive Password:</b> Change the encryption password for all future batch archives.</li>
             <li><b>Max Concurrent Transfers:</b> Set how many jobs are permitted to transfer simultaneously (recommended: <code>2</code> to <code>4</code>).</li>
-            <li><b>Transfer Threads:</b> Set file-copy worker threads (recommended: <code>4</code> for network shares).</li>
+            <li><b>Transfer Threads:</b> Set file-copy worker threads (default: <code>8</code>, recommended: <code>4</code> to <code>8</code> for network shares).</li>
             <li><b>Network Drive Mode:</b> Check this option when transferring across Windows network shares (UNC paths).</li>
             <li><b>Cleanup Retention (Days):</b> Configure how many days transferred files remain on the source machine before automated dual-verified cleanup (default: <code>7</code> days).</li>
         </ul>
+
+        <h2>Step 6: Generating & Managing Corporate Daily Backup Checklists</h2>
+        <p>To inspect and export the official corporate backup checklist for internal audit sign-off:</p>
+        <ol>
+            <li>Click <b>Daily Report</b> in the sidebar navigation.</li>
+            <li><b>Calendar Picker:</b> Select the batch date you wish to inspect (defaults to today). The preview table and statistics cards update automatically.</li>
+            <li><b>Checklist Configurator:</b> Click <b>Configure Checklist</b> to map test jobs (e.g. mapping test job <code>003</code> to official corporate row <code>TFA</code>), add extra systems, adjust file patterns, or change the default supervisor sign-off name (<b>Philip M. Bayudan</b>).</li>
+            <li><b>Live Table Preview:</b> Review total transferred sizes, latest completion times, verification statuses, and automated SHA-256 cryptographic check results.</li>
+            <li><b>Generate Excel Report:</b> Click <b>Generate Report (.xlsx)</b>. The system compiles the official checklist and saves it to <code>reports/TFSPH_Daily_Backup_Checklist_YYYY-MM-DD.xlsx</code>.</li>
+            <li><b>Excel File Locking Note:</b> Because Microsoft Excel locks files on Windows when open, close Excel after viewing so automated background transfers can directly overwrite the primary checklist. If Excel remains open, the system automatically saves to <code>..._latest.xlsx</code> so updates are never lost.</li>
+        </ol>
         """
 
     def _doc_statuses(self) -> str:
@@ -635,10 +647,10 @@ class DocsPageWidget(QWidget):
                 <td><b>Pros:</b> Maximizes gigabit line speed without exhausting SMB connection credits or overloading the server's disk queue. Rock-solid stability.<br><b>Cons:</b> None on standard enterprise LANs.</td>
             </tr>
             <tr>
-                <td><b>8 Threads</b><br>(High-Speed Local)</td>
-                <td>Copies 8 files simultaneously.</td>
-                <td>High-speed local NVMe SSD-to-NVMe SSD arrays, or dedicated 10 Gbps enterprise server backbones.</td>
-                <td><b>Pros:</b> Fast on local high-end storage.<br><b>Cons on SMB:</b> On standard 1 Gbps network shares, 8 threads can exhaust Windows SMB session credits (typically 64–128 credits), triggering 5–10 second packet stalls.</td>
+                <td><b>8 Threads</b><br><b>(Configured Default)</b></td>
+                <td>Copies 8 files simultaneously per job across the thread pool.</td>
+                <td>Modern multi-core enterprise workstations, NVMe SSDs, high-throughput network backbones, and server storage.</td>
+                <td><b>Pros:</b> Achieves maximum saturation of gigabit and multi-gigabit connections.<br><b>Note:</b> Coupled with the system's 600ms event debouncer and SQLite WAL mode, 8 concurrent threads run smoothly without GUI locking.</td>
             </tr>
             <tr>
                 <td><b>16+ Threads</b><br>(Enterprise SAN Only)</td>
@@ -652,7 +664,7 @@ class DocsPageWidget(QWidget):
         <div class="callout-info">
             <b>Key Distinction:</b>
             <br>&bull; <b>Max Concurrent Transfers:</b> Controls how many <b>different Jobs</b> (e.g. Job 1, Job 2, Job 3) can run at the same time (default: <code>3</code>).
-            <br>&bull; <b>Transfer Threads:</b> Controls how many <b>individual files</b> inside a direct-transfer job are copied at once (default: <code>4</code>).
+            <br>&bull; <b>Transfer Threads:</b> Controls how many <b>individual files</b> inside a direct-transfer job are copied at once (default: <code>8</code>).
         </div>
 
         <h2>Network Disconnect Resilience</h2>
@@ -758,6 +770,50 @@ class DocsPageWidget(QWidget):
             <li>Now, whenever Windows boots and logs in, the application starts and begins monitoring all enabled jobs automatically.</li>
         </ol>
 
+        <h3>Scenario 8: Microsoft Excel File Lock ([Errno 13] Permission denied) & Fallback Saving</h3>
+        <p><b>Cause:</b> An operator or supervisor currently has the generated daily report open in Microsoft Excel on Windows.</p>
+        <p><b>Technical Details & Resolution:</b></p>
+        <ul>
+            <li><b>Windows Exclusive File Locking:</b> When Microsoft Excel opens any <code>.xlsx</code> workbook on Windows, it obtains an exclusive operating system write lock. Any external software (like Python or openpyxl) attempting to modify or overwrite that file is blocked with <code>[Errno 13] Permission denied</code>.</li>
+            <li><b>Excel In-Memory Buffering:</b> Furthermore, Microsoft Excel does not poll the file system or reload modified files while open. Even if an external program wrote to the disk, Excel would discard those changes upon closing or saving.</li>
+            <li><b>Automated Fallback to <code>..._latest.xlsx</code>:</b> Instead of crashing or throwing an unhandled exception, the system catches the Windows lock error, writes the fresh report to a designated fallback file:
+                <br><code>reports/TFSPH_Daily_Backup_Checklist_&lt;YYYY-MM-DD&gt;_latest.xlsx</code>
+            </li>
+            <li><b>Operator Notification:</b> A yellow Warning InfoBar pops up in the UI: <i>"Original report file is currently open in Microsoft Excel. Saved latest copy to ..._latest.xlsx. Close Excel to overwrite primary report."</i></li>
+            <li><b>How to Update Primary Report:</b> Simply close Microsoft Excel and click <b>Generate Report (.xlsx)</b> again or wait for the next automated window completion.</li>
+        </ul>
+
+        <h3>Scenario 9: Multi-File Batch Jobs Total Size Calculation & Timestamp Accuracy</h3>
+        <p><b>Question:</b> Why does a job containing multiple files display only a few bytes, or how does the checklist calculate the total size?</p>
+        <p><b>How It Works:</b></p>
+        <ul>
+            <li>In real-world production or test environments, a job may transfer multiple files (e.g., <code>003_part1.dat</code>, <code>003_part2.dat</code>, etc.).</li>
+            <li>The Daily Report service computes the true aggregated byte sum across all successful transfer records for that job (<code>sum(r.file_size)</code>). If a job transferred three 100 MB files, the checklist accurately reports <code>300.0 MB</code>.</li>
+            <li>The completion timestamp in Column G (<b>Time of Completion</b>) reflects the <b>latest completion timestamp</b> among all files in the batch, guaranteeing audit integrity.</li>
+            <li>If a job was paused and restarted, or files were deleted, only valid, completed transfers for that batch date are summed.</li>
+        </ul>
+
+        <h3>Scenario 10: Operator Workflow — Pause &rarr; Delete &rarr; Start &rarr; Sync Now</h3>
+        <p><b>Question:</b> What happens to the daily report if an operator pauses a job, deletes files from the source folder, starts the job, and triggers Sync Now?</p>
+        <p><b>Lifecycle Behavior:</b></p>
+        <ol>
+            <li><b>Pause:</b> Halts the active filesystem watcher. Staged files hold in place.</li>
+            <li><b>Delete from Source:</b> When files are removed from the source folder while paused, the physical files no longer exist on disk.</li>
+            <li><b>Start Monitoring & Sync Now:</b> The transfer engine executes a pre-flight existence sweep. It immediately detects that the deleted files are absent, logs them as <code>SKIPPED</code>, and removes them from active staging.</li>
+            <li><b>Transfer Execution:</b> Any remaining valid files in the source folder transfer cleanly and complete with SHA-256 integrity verification.</li>
+            <li><b>Real-Time Report Sync:</b> The application's 600ms debouncer triggers upon transfer completion, instantly updating the Daily Report live preview table and generating a fresh Excel checklist without requiring an application restart.</li>
+        </ol>
+
+        <h3>Scenario 11: Multi-Job Concurrency, Thread Pool (8 Threads), and GUI Responsiveness</h3>
+        <p><b>Question:</b> Can running 3 jobs simultaneously with 8 worker threads freeze or lag the user interface?</p>
+        <p><b>Engineering Safeguards:</b></p>
+        <ul>
+            <li><b>600ms Debounced Event Timer:</b> During fast multi-job transfers, dozens of transfer completion signals arrive in rapid succession. Instead of rebuilding UI tables on every single file (which can freeze Qt), the system buffers events with a 600ms timer (<code>_report_refresh_timer</code>), consolidating multiple updates into a single fluid UI repaint.</li>
+            <li><b>Background Report Generation:</b> Report compiling and Excel rendering run asynchronously in a daemon background thread (<code>threading.Thread</code>), keeping the main GUI thread completely unblocked.</li>
+            <li><b>SQLite Write-Ahead Logging (WAL):</b> Multi-threaded database operations execute with thread-safe write locks and WAL journal mode, preventing database lock errors (<code>sqlite3.OperationalError: database is locked</code>).</li>
+            <li><b>Cached Network Checks:</b> SMB/UNC directory capacity queries are cached for 60 seconds to avoid blocking when inspecting remote file servers.</li>
+        </ul>
+
         <h2>Frequently Asked Questions (FAQ)</h2>
 
         <h3>Q: Why is there a slight initial delay when transferring large files (e.g. 1.9 GB) compared to 50 MB files?</h3>
@@ -767,7 +823,10 @@ class DocsPageWidget(QWidget):
         <p><b>A:</b> Yes. In <b>Settings</b>, the <b>Max Concurrent Transfers</b> setting (default: <code>3</code>) allows multiple jobs to run in parallel. If more jobs trigger than the limit, extra jobs wait in an orderly queue and start automatically as soon as an active job finishes.</p>
 
         <h3>Q: Will this slow down my network or freeze my computer?</h3>
-        <p><b>A:</b> No. Heavy compression is offloaded to a background helper process so your desktop interface remains at a smooth 40–60 FPS. Direct transfers are rate-limited to 4 threads to prevent network traffic congestion.</p>
+        <p><b>A:</b> No. Heavy compression is offloaded to a background helper process so your desktop interface remains at a smooth 40–60 FPS. Direct transfers default to 8 worker threads with throttled GUI signal dispatchers (capped at 100ms) and a 600ms report refresh debouncer, ensuring peak throughput without UI freezes.</p>
+
+        <h3>Q: What should I do if the Daily Report says "Saved latest copy to ..._latest.xlsx"?</h3>
+        <p><b>A:</b> This means you or someone else has the primary report workbook (<code>TFSPH_Daily_Backup_Checklist_YYYY-MM-DD.xlsx</code>) open in Microsoft Excel. Close Excel so Windows releases the file lock, then click <b>Generate Report (.xlsx)</b> in the Daily Report toolbar to overwrite the primary report with the latest figures.</p>
         """
 
     def _doc_testing_guide(self) -> str:
@@ -828,4 +887,125 @@ class DocsPageWidget(QWidget):
             <li>Briefly disconnect your network connection (unplug cable or toggle Wi-Fi for 3 seconds), then reconnect.</li>
             <li><b>Observed Result:</b> The system tests root share reachability. Because the server was temporarily unreachable, it skips the sweep instead of falsely reporting files as deleted. When the network reconnects, monitoring resumes seamlessly without false alarms.</li>
         </ol>
+
+        <h2>Test 6: Verifying Daily Backup Checklist & Linked Job Mapping</h2>
+        <p><b>Goal:</b> Prove that test jobs (e.g., <code>001</code> to <code>006</code>) automatically populate the official corporate checklist systems (<code>TFS42PROD</code>, <code>CSE</code>, <code>TFA</code>, etc.) with accurate aggregated sizes and cryptographic integrity status.</p>
+        <ol>
+            <li>Click <b>Daily Report</b> in the sidebar navigation, then click <b>Configure Checklist</b>.</li>
+            <li>Verify the <b>Linked Job</b> mappings (e.g., <code>001</code> &rarr; <code>TFS42PROD</code>, <code>002</code> &rarr; <code>CSE</code>, <code>003</code> &rarr; <code>TFA</code>, <code>004</code> &rarr; <code>COGNOS</code>, <code>005</code> &rarr; <code>SAP</code>, <code>006</code> &rarr; <code>GOCANVAS</code>). Click <b>Save</b>.</li>
+            <li>Navigate to the Main Dashboard and trigger a transfer on job <code>001</code> (or click <b>Sync Now</b>).</li>
+            <li>Once the transfer completes, switch back to the <b>Daily Report</b> tab.</li>
+            <li><b>Observed Result:</b>
+                <ul>
+                    <li>The live preview table automatically refreshes (via the 600ms debouncer) without requiring an application restart.</li>
+                    <li>Row 1 (<code>TFS42PROD</code>) now displays the formatted filename matching the corporate pattern (without <code>.zip</code>), the true aggregated byte size across all transferred files (e.g. <code>345.5 MB</code>), the latest completion timestamp, status <code>COMPLETED</code>, and SHA-256 integrity check <code>Passed</code>!</li>
+                </ul>
+            </li>
+        </ol>
+
+        <h2>Test 7: Verifying Microsoft Excel File Lock Safeguard & Fallback Saving</h2>
+        <p><b>Goal:</b> Prove that when the daily report workbook is held open in Microsoft Excel, background generation saves to <code>_latest.xlsx</code> without crashing or dropping data.</p>
+        <ol>
+            <li>In the <b>Daily Report</b> tab, click <b>Generate Report (.xlsx)</b>. The system opens the generated workbook in Microsoft Excel.</li>
+            <li><b>Leave Microsoft Excel open</b> with the spreadsheet displayed on your screen.</li>
+            <li>Switch back to the File Transfer Automation application and click <b>Generate Report (.xlsx)</b> again (or trigger a job transfer).</li>
+            <li><b>Observed Result:</b>
+                <ul>
+                    <li>The system detects the exclusive Windows Excel file lock (<code>[Errno 13] Permission denied</code>).</li>
+                    <li>Instead of crashing, the system gracefully writes the fresh workbook to <code>reports/TFSPH_Daily_Backup_Checklist_&lt;YYYY-MM-DD&gt;_latest.xlsx</code>.</li>
+                    <li>A warning notification displays: <i>"Original report file is currently open in Microsoft Excel. Saved latest copy to ..._latest.xlsx. Close Excel to overwrite primary report."</i></li>
+                    <li>Close Microsoft Excel and click <b>Generate Report (.xlsx)</b> again. The primary workbook is now cleanly overwritten with zero lock errors!</li>
+                </ul>
+            </li>
+        </ol>
         """
+
+    def _doc_daily_report(self) -> str:
+        return """
+        <h1>TFSPH Daily Backup Checklist & Executive Report Guide</h1>
+        <p>This section provides comprehensive instructions for the <b>Daily Report</b> interface, automated checklist generation, and audit sign-off compliance using the official corporate Excel template (<code>templates/TFSPH_Daily_Backup_Checklist_Template.xlsx</code>).</p>
+
+        <h2>1. Purpose of the Daily Report</h2>
+        <p>Toyota Financial Services Philippines (TFSPH) requires a standardized daily verification checklist confirming that all critical production and application backups have completed successfully, hashes have been cryptographically verified, and storage capacity is intact. This report serves as operational proof for internal audits and disaster recovery compliance.</p>
+
+        <h2>2. Master Monitored Systems (Table 1)</h2>
+        <p>The system comes pre-configured with the 8 standard TFSPH enterprise systems:</p>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #E2E8F0;">
+            <tr style="background-color: #F8FAFC;">
+                <th>No.</th>
+                <th>System / Job</th>
+                <th>Pattern Convention</th>
+                <th>Type</th>
+                <th>Description</th>
+            </tr>
+            <tr><td>1</td><td><b>TFS42PROD</b></td><td><code>TFS42PROD_&lt;YYYYMMDD&gt;</code></td><td>RAR</td><td>Pre-Batch Clean Backup</td></tr>
+            <tr><td>2</td><td><b>CSE</b></td><td><code>CSE_BACKUP_&lt;MM-DD-YYYY&gt;</code></td><td>RAR</td><td>PSR (CSE) Backup</td></tr>
+            <tr><td>3</td><td><b>TFA</b></td><td><code>TFA_&lt;YYYYMMDD&gt;</code></td><td>RAR</td><td>TFA Application Backup</td></tr>
+            <tr><td>4</td><td><b>COGNOS</b></td><td><code>COGNOS_&lt;YYYYMMDD&gt;</code></td><td>RAR</td><td>Cognos Backup</td></tr>
+            <tr><td>5</td><td><b>SAP</b></td><td><code>SAP_BACKUP_&lt;MM-DD-YYYY&gt;</code></td><td>RAR</td><td>SAP Backup</td></tr>
+            <tr><td>6</td><td><b>GOCANVAS</b></td><td><code>GOCANVAS_BACKUP_&lt;YYYYMMDD&gt;</code></td><td>RAR</td><td>GoCanvas Backup</td></tr>
+            <tr><td>7</td><td><b>DPPS</b></td><td><code>DPPS_BACKUP_&lt;YYYYMMDD&gt;</code></td><td>FILE</td><td>DPPS Backup</td></tr>
+            <tr><td>8</td><td><b>QMS</b></td><td><code>QMS_BACKUP_&lt;YYYYMMDD&gt;</code></td><td>FILE</td><td>QMS Backup</td></tr>
+        </table>
+
+        <h2>3. Key Design Rules & Specifications</h2>
+        <ul>
+            <li><b>Omission of .zip in Filename (Col B):</b> In accordance with TFSPH standards, filenames in Column B (e.g. <code>TFS42PROD_20260904</code>) do <b>NOT</b> include <code>.zip</code> or <code>.rar</code> extensions, because Column C is the dedicated <b>File Type</b> column.</li>
+            <li><b>Automated Integrity Check (Col I):</b> The system automatically populates this column based on live cryptographic SHA-256 hash checks:
+                <ul>
+                    <li><code>Passed</code>: File transfer completed and SHA-256 checksum matched source file 100%.</li>
+                    <li><code>Failed</code>: Transfer failed or checksum mismatch occurred.</li>
+                    <li><code>Not Applicable</code>: Job was skipped, cancelled, or has not executed yet.</li>
+                </ul>
+            </li>
+            <li><b>Dynamic Row Expansion:</b> If the supervisor adds more systems beyond the original 8 (e.g., 9 or 10 systems), the generator automatically inserts rows into Table 1, clones exact styling/borders/data validations, and shifts Daily Control Checks and Sign-Off sections down without breaking merged cells.</li>
+        </ul>
+
+        <h2>4. Section 2: Automated Daily Control Checks</h2>
+        <p>The system automatically evaluates all 7 corporate control checks in real time:</p>
+        <ol>
+            <li><b>Backup file exists in designated repository:</b> Verified by checking file presence on the target repository disk.</li>
+            <li><b>Backup job completed successfully without critical errors:</b> Verified against SQLite error logs and transfer statuses.</li>
+            <li><b>File size is within expected range:</b> Confirms all backup archives are non-zero byte files.</li>
+            <li><b>Filename follows approved naming convention:</b> Checks adherence to system prefix and date stamping.</li>
+            <li><b>Backup archive accessible & integrity check passed:</b> Evaluates SHA-256 cryptographic verification results.</li>
+            <li><b>Repository capacity and availability confirmed:</b> Queries the Windows/SMB file system for available free disk space.</li>
+            <li><b>Failed or missed backup escalated and documented:</b> Summarizes exceptions in Table 1 remarks.</li>
+        </ol>
+
+        <h2>5. Section 3: Sign-Off & Approvals</h2>
+        <ul>
+            <li><b>Prepared By:</b> Automatically filled with the active Windows operator name (or custom operator name configured in the toolbar).</li>
+            <li><b>Checked By:</b> Defaults to <b>Philip M. Bayudan</b> (editable anytime via the Checklist Configurator dialog).</li>
+            <li><b>Reviewed By:</b> Reserved blank for management physical/digital signature.</li>
+        </ul>
+
+        <h2>6. How to Generate the Report</h2>
+        <ul>
+            <li><b>Manual Generation:</b> Go to <b>Daily Report</b> in the sidebar navigation, select the desired batch date using the calendar picker, verify the live preview table, and click <b>Generate Report (.xlsx)</b>. The generated Excel workbook will be saved to the <code>reports/</code> folder and opened automatically.</li>
+            <li><b>Automated Generation:</b> When <i>Auto-generate report on transfer completion</i> is enabled (default), the system automatically compiles and exports the daily checklist report as soon as all scheduled transfer window jobs finish.</li>
+            <li><b>Supervisor Configuration:</b> Click <b>Configure Checklist</b> to add new production systems, modify naming patterns, change the default supervisor sign-off name, or restore factory defaults.</li>
+        </ul>
+
+        <h2>7. Linked Job Mapping (Testing & Deployment Agility)</h2>
+        <p>In real-world operations, test jobs or staging pipelines may not share the exact name of the official production systems:</p>
+        <ul>
+            <li><b>Seamless Mapping:</b> The <b>Linked Job</b> field in the Checklist Configurator allows you to map any local or test job name (e.g., <code>001</code>, <code>002</code>, <code>Test_Job_A</code>) directly to an official checklist row (e.g., <code>TFS42PROD</code>, <code>CSE</code>).</li>
+            <li><b>Zero Manual Edits:</b> When the test job executes, the report engine automatically routes its transfer statistics, file sizes, and cryptographic checksums directly to the corresponding corporate checklist row.</li>
+            <li><b>Production Ready:</b> In final production deployment, simply clear or update the linked job alias to match the live production job identifiers.</li>
+        </ul>
+
+        <h2>8. Multi-File Aggregate Size & Timestamp Accuracy</h2>
+        <p>For jobs configured to transfer multiple files in direct copy or batched mode:</p>
+        <ul>
+            <li><b>Total Size Aggregation:</b> The system sums the byte counts across all successful transfer records for the target job on that batch date (<code>sum(r.file_size)</code>), presenting the true total payload (e.g. <code>350.2 MB</code>) instead of individual file snippets or archive overhead.</li>
+            <li><b>Latest Completion Timestamp:</b> Column G (<b>Time of Completion</b>) automatically selects the latest completion timestamp among all completed files in that batch (<code>max(completed_at)</code>), giving auditors an accurate record of when the backup cycle truly finished.</li>
+        </ul>
+
+        <h2>9. Real-Time Debounced Refresh & Excel File Lock Protection</h2>
+        <ul>
+            <li><b>600ms Event Debouncer:</b> When transfers finish, Sync Now triggers, or tabs are switched, a 600ms debouncing timer buffers GUI updates, refreshing the live preview table smoothly without stutter or thread locking.</li>
+            <li><b>Windows Excel File Lock Safeguard:</b> If the report is open in Microsoft Excel, Windows places an exclusive write lock on the file. Instead of failing with <code>[Errno 13] Permission denied</code>, the system automatically saves the updated report to a fallback workbook (<code>..._latest.xlsx</code>) and notifies the operator via a yellow Warning InfoBar. Once Excel is closed, the primary workbook can be overwritten cleanly.</li>
+        </ul>
+        """
+
