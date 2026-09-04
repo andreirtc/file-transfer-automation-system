@@ -9,13 +9,15 @@ reconciliation scanning as a fallback for missed events.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileSystemEventHandler
+from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileModifiedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 logger = logging.getLogger("app")
 
@@ -28,11 +30,15 @@ class _FileEventHandler(FileSystemEventHandler):
     def __init__(
         self,
         on_file_detected: Callable[[str], None],
+        on_file_deleted: Optional[Callable[[str], None]] = None,
+        on_dir_deleted: Optional[Callable[[str], None]] = None,
         temp_suffix: str = ".transfer_tmp",
         debounce_seconds: float = 1.0,
     ):
         super().__init__()
         self._on_file_detected = on_file_detected
+        self._on_file_deleted = on_file_deleted
+        self._on_dir_deleted = on_dir_deleted
         self._temp_suffix = temp_suffix
         self._debounce_seconds = debounce_seconds
         self._last_event: dict[str, float] = {}
@@ -45,6 +51,20 @@ class _FileEventHandler(FileSystemEventHandler):
     def on_modified(self, event: FileModifiedEvent) -> None:
         if not event.is_directory:
             self._handle_event(event.src_path)
+
+    def on_deleted(self, event) -> None:
+        if getattr(event, "is_directory", False):
+            if self._on_dir_deleted:
+                try:
+                    self._on_dir_deleted(event.src_path)
+                except Exception:
+                    logger.exception("Error in dir deletion callback for %s", event.src_path)
+        else:
+            if self._on_file_deleted:
+                try:
+                    self._on_file_deleted(event.src_path)
+                except Exception:
+                    logger.exception("Error in file deletion callback for %s", event.src_path)
 
     def _handle_event(self, src_path: str) -> None:
         """Filter and debounce a filesystem event."""
@@ -85,22 +105,31 @@ class FileMonitor:
         self,
         source_folder: str | Path,
         on_file_detected: Callable[[str], None],
+        on_file_deleted: Optional[Callable[[str], None]] = None,
+        on_dir_deleted: Optional[Callable[[str], None]] = None,
         reconciliation_interval: int = 30,
         temp_suffix: str = ".transfer_tmp",
+        use_polling: bool = False,
     ):
         """
         Args:
             source_folder: Directory to monitor.
             on_file_detected: Callback invoked with the file path when
                 a new/modified file is detected.
+            on_file_deleted: Callback invoked with the file path when
+                a file is deleted.
+            on_dir_deleted: Callback invoked when an entire directory is deleted.
             reconciliation_interval: Seconds between full folder scans.
             temp_suffix: Suffix used by transfer engine for temp files
                 (these are ignored).
         """
         self._source_folder = Path(source_folder)
         self._on_file_detected = on_file_detected
+        self._on_file_deleted = on_file_deleted
+        self._on_dir_deleted = on_dir_deleted
         self._reconciliation_interval = reconciliation_interval
         self._temp_suffix = temp_suffix
+        self._use_polling = use_polling or str(self._source_folder).startswith(("\\\\", "//"))
 
         self._observer: Optional[Observer] = None
         self._reconcile_thread: Optional[threading.Thread] = None
@@ -135,9 +164,16 @@ class FileMonitor:
         # Start watchdog observer
         handler = _FileEventHandler(
             on_file_detected=self._on_file_detected,
+            on_file_deleted=self._on_file_deleted,
+            on_dir_deleted=self._on_dir_deleted,
             temp_suffix=self._temp_suffix,
         )
-        self._observer = Observer()
+        if self._use_polling:
+            logger.info("Using PollingObserver for network folder: %s", self._source_folder)
+            self._observer = PollingObserver(timeout=1.0)
+        else:
+            self._observer = Observer()
+
         self._observer.schedule(handler, str(self._source_folder), recursive=True)
         self._observer.daemon = True
         self._observer.start()
@@ -154,22 +190,32 @@ class FileMonitor:
         logger.info("File monitor started for: %s", self._source_folder)
 
     def stop(self) -> None:
-        """Stop monitoring."""
+        """Stop monitoring asynchronously without blocking the GUI thread."""
         if not self._is_running:
             return
 
+        self._is_running = False
         self._stop_event.set()
 
-        if self._observer:
-            self._observer.stop()
-            self._observer.join(timeout=5)
-            self._observer = None
+        obs = self._observer
+        rec_thread = self._reconcile_thread
+        self._observer = None
+        self._reconcile_thread = None
 
-        if self._reconcile_thread:
-            self._reconcile_thread.join(timeout=5)
-            self._reconcile_thread = None
+        def _cleanup():
+            if obs:
+                try:
+                    obs.stop()
+                    obs.join(timeout=2)
+                except Exception:
+                    pass
+            if rec_thread:
+                try:
+                    rec_thread.join(timeout=2)
+                except Exception:
+                    pass
 
-        self._is_running = False
+        threading.Thread(target=_cleanup, daemon=True).start()
         logger.info("File monitor stopped")
 
     def scan_folder(self) -> list[str]:
@@ -185,14 +231,12 @@ class FileMonitor:
 
         files = []
         try:
-            for item in self._source_folder.rglob('*'):
-                if item.is_file():
-                    # Skip temp files and hidden files
-                    if item.name.endswith(self._temp_suffix):
+            for root, dirs, filenames in os.walk(self._source_folder):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for fname in filenames:
+                    if fname.endswith(self._temp_suffix) or fname.startswith("."):
                         continue
-                    if item.name.startswith("."):
-                        continue
-                    files.append(str(item))
+                    files.append(os.path.join(root, fname))
         except OSError as e:
             logger.error("Error scanning folder: %s", e)
 

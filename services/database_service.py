@@ -11,11 +11,13 @@ and closes its own connection so the service can be called from any thread.
 
 from __future__ import annotations
 
+import json
 import logging
-from pathlib import Path
 import sqlite3
 import sys
+import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from core.models import FileStatus, TransferJob, TransferRecord
@@ -49,6 +51,7 @@ class DatabaseService:
             )
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
         self._init_schema()
 
     # ──────────────────────────────────────────────
@@ -57,9 +60,8 @@ class DatabaseService:
 
     def _connect(self) -> sqlite3.Connection:
         """Create a new SQLite connection."""
-        conn = sqlite3.connect(str(self._db_path), timeout=10)
+        conn = sqlite3.connect(str(self._db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
@@ -67,6 +69,8 @@ class DatabaseService:
         """Create tables if they do not exist."""
         conn = self._connect()
         try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS transfer_jobs (
@@ -79,6 +83,7 @@ class DatabaseService:
                     schedule_mode TEXT NOT NULL DEFAULT 'continuous',
                     window_start  TEXT NOT NULL DEFAULT '23:00',
                     window_end    TEXT NOT NULL DEFAULT '06:00',
+                    days_of_week  TEXT NOT NULL DEFAULT '["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]',
                     created_at    TEXT
                 );
 
@@ -120,6 +125,11 @@ class DatabaseService:
                 conn.execute("ALTER TABLE transfer_jobs ADD COLUMN window_end TEXT NOT NULL DEFAULT '06:00'")
             except sqlite3.OperationalError:
                 pass  # Columns likely already exist
+
+            try:
+                conn.execute("ALTER TABLE transfer_jobs ADD COLUMN days_of_week TEXT NOT NULL DEFAULT '[\"Mon\", \"Tue\", \"Wed\", \"Thu\", \"Fri\", \"Sat\", \"Sun\"]'")
+            except sqlite3.OperationalError:
+                pass
                 
             try:
                 conn.execute("ALTER TABLE transfer_records ADD COLUMN override_window INTEGER NOT NULL DEFAULT 0")
@@ -155,8 +165,8 @@ class DatabaseService:
                 """
                 INSERT OR REPLACE INTO transfer_jobs
                     (id, name, source_folder, destination_folder,
-                     enabled, auto_monitor, schedule_mode, window_start, window_end, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     enabled, auto_monitor, schedule_mode, window_start, window_end, days_of_week, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.id,
@@ -168,6 +178,7 @@ class DatabaseService:
                     job.schedule_mode,
                     job.window_start,
                     job.window_end,
+                    json.dumps(job.days_of_week),
                     self._dt_to_str(job.created_at),
                 ),
             )
@@ -208,6 +219,15 @@ class DatabaseService:
             conn.close()
 
     def _row_to_job(self, row: sqlite3.Row) -> TransferJob:
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        try:
+            if "days_of_week" in row.keys() and row["days_of_week"]:
+                parsed = json.loads(row["days_of_week"])
+                if isinstance(parsed, list):
+                    days = parsed
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
+
         return TransferJob(
             id=row["id"],
             name=row["name"],
@@ -218,6 +238,7 @@ class DatabaseService:
             schedule_mode=row["schedule_mode"],
             window_start=row["window_start"],
             window_end=row["window_end"],
+            days_of_week=days,
             created_at=self._str_to_dt(row["created_at"]),
         )
 
@@ -227,82 +248,83 @@ class DatabaseService:
 
     def save_record(self, record: TransferRecord) -> None:
         """Insert or replace a transfer record."""
-        conn = self._connect()
-        try:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO transfer_records
-                    (id, job_id, file_name, source_path, destination_path,
-                     file_size, source_modified, source_hash, destination_hash,
-                     status, detected_at, transfer_started, transfer_completed,
-                    error_message, retry_count, verification_passed, override_window)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.id,
-                    record.job_id,
-                    record.file_name,
-                    record.source_path,
-                    record.destination_path,
-                    record.file_size,
-                    record.source_modified,
-                    record.source_hash,
-                    record.destination_hash,
-                    record.status.value,
-                    self._dt_to_str(record.detected_at),
-                    self._dt_to_str(record.transfer_started),
-                    self._dt_to_str(record.transfer_completed),
-                    record.error_message,
-                    record.retry_count,
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO transfer_records
+                        (id, job_id, file_name, source_path, destination_path,
+                         file_size, source_modified, source_hash, destination_hash,
+                         status, detected_at, transfer_started, transfer_completed,
+                        error_message, retry_count, verification_passed, override_window)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
                     (
-                        record.verification_passed if isinstance(record.verification_passed, int) 
-                        else (int(record.verification_passed) if record.verification_passed is not None else None)
+                        record.id,
+                        record.job_id,
+                        record.file_name,
+                        record.source_path,
+                        record.destination_path,
+                        record.file_size,
+                        record.source_modified,
+                        record.source_hash,
+                        record.destination_hash,
+                        record.status.value,
+                        self._dt_to_str(record.detected_at),
+                        self._dt_to_str(record.transfer_started),
+                        self._dt_to_str(record.transfer_completed),
+                        record.error_message,
+                        record.retry_count,
+                        (
+                            record.verification_passed if isinstance(record.verification_passed, int) 
+                            else (int(record.verification_passed) if record.verification_passed is not None else None)
+                        ),
+                        (
+                            record.override_window if isinstance(record.override_window, int) 
+                            else int(record.override_window)
+                        ),
                     ),
-                    (
-                        record.override_window if isinstance(record.override_window, int) 
-                        else int(record.override_window)
-                    ),
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def save_records_batch(self, records: list[TransferRecord]) -> None:
         """Insert or replace multiple transfer records in a single transaction."""
         if not records:
             return
-            
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN TRANSACTION")
-            
-            data = []
-            for record in records:
-                data.append((
-                    record.id, record.job_id, record.file_name, record.source_path, record.destination_path,
-                    record.file_size, record.source_modified, record.source_hash, record.destination_hash,
-                    record.status.value, self._dt_to_str(record.detected_at),
-                    self._dt_to_str(record.transfer_started), self._dt_to_str(record.transfer_completed),
-                    record.error_message, record.retry_count,
-                    (record.verification_passed if isinstance(record.verification_passed, int) else (int(record.verification_passed) if record.verification_passed is not None else None)),
-                    (record.override_window if isinstance(record.override_window, int) else int(record.override_window))
-                ))
-                
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO transfer_records
-                    (id, job_id, file_name, source_path, destination_path,
-                     file_size, source_modified, source_hash, destination_hash,
-                     status, detected_at, transfer_started, transfer_completed,
-                    error_message, retry_count, verification_passed, override_window)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                data
-            )
-            conn.commit()
-        finally:
-            conn.close()
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN TRANSACTION")
+                data = []
+                for record in records:
+                    data.append((
+                        record.id, record.job_id, record.file_name, record.source_path, record.destination_path,
+                        record.file_size, record.source_modified, record.source_hash, record.destination_hash,
+                        record.status.value, self._dt_to_str(record.detected_at),
+                        self._dt_to_str(record.transfer_started), self._dt_to_str(record.transfer_completed),
+                        record.error_message, record.retry_count,
+                        (record.verification_passed if isinstance(record.verification_passed, int) else (int(record.verification_passed) if record.verification_passed is not None else None)),
+                        (record.override_window if isinstance(record.override_window, int) else int(record.override_window))
+                    ))
+
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO transfer_records
+                        (id, job_id, file_name, source_path, destination_path,
+                         file_size, source_modified, source_hash, destination_hash,
+                         status, detected_at, transfer_started, transfer_completed,
+                         error_message, retry_count, verification_passed, override_window)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    data
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def get_records_by_job(
         self,
@@ -415,21 +437,43 @@ class DatabaseService:
         finally:
             conn.close()
 
+    def clear_job_history(self, job_id: str) -> None:
+        """Delete all transfer records for a specific job."""
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("DELETE FROM transfer_records WHERE job_id = ?", (job_id,))
+        finally:
+            conn.close()
+
+    def clear_all_history(self) -> None:
+        """Delete all transfer records across all jobs."""
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("DELETE FROM transfer_records")
+        finally:
+            conn.close()
+
     def get_statistics(self, job_id: str) -> dict[str, int]:
-        """Return counts of records by status for a job."""
+        """Return counts of records by status for a job, plus total source bytes."""
         conn = self._connect()
         try:
             rows = conn.execute(
-                """SELECT status, COUNT(*) as cnt
+                """SELECT status, COUNT(*) as cnt, COALESCE(SUM(file_size), 0) as total_size
                    FROM transfer_records
                    WHERE job_id = ?
                    GROUP BY status""",
                 (job_id,),
             ).fetchall()
             stats = {s.value: 0 for s in FileStatus}
+            total_source_bytes = 0
             for row in rows:
                 if row["status"] in stats:
                     stats[row["status"]] = row["cnt"]
+                if row["status"] != FileStatus.SKIPPED.value:
+                    total_source_bytes += int(row["total_size"])
+            stats["TOTAL_SOURCE_BYTES"] = total_source_bytes
             return stats
         finally:
             conn.close()
@@ -439,14 +483,18 @@ class DatabaseService:
         conn = self._connect()
         try:
             rows = conn.execute(
-                """SELECT status, COUNT(*) as cnt
+                """SELECT status, COUNT(*) as cnt, COALESCE(SUM(file_size), 0) as total_size
                    FROM transfer_records
                    GROUP BY status"""
             ).fetchall()
             stats = {s.value: 0 for s in FileStatus}
+            total_source_bytes = 0
             for row in rows:
                 if row["status"] in stats:
                     stats[row["status"]] = row["cnt"]
+                if row["status"] != FileStatus.SKIPPED.value:
+                    total_source_bytes += int(row["total_size"])
+            stats["TOTAL_SOURCE_BYTES"] = total_source_bytes
             return stats
         finally:
             conn.close()

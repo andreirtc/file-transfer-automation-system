@@ -15,7 +15,7 @@ build/
 database/*.db
 
 # Logs (auto-generated)
-logs/*.log
+logs/
 
 # Demo artifacts
 demo/source/*

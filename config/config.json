@@ -14,6 +14,9 @@
     "log_backup_count": 3,
     "network_drive_mode": true,
     "auto_cleanup_enabled": true,
+    "auto_cleanup_days": 7,
     "batch_compression_enabled": true,
-    "zip_password": "password123"
+    "zip_password": "password123",
+    "max_concurrent_transfers": 3,
+    "transfer_threads": 8
 }

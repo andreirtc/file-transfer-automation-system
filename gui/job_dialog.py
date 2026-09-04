@@ -21,12 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from PySide6.QtCore import Qt, QTime
+from PySide6.QtGui import QColor
 
 from qfluentwidgets import (
     MessageBoxBase,
     LineEdit,
     PushButton,
     SwitchButton,
+    CheckBox,
     MessageBox,
     SubtitleLabel,
     BodyLabel
@@ -52,7 +54,10 @@ class JobDialog(MessageBoxBase):
         
         self.yesButton.setText("Save")
         self.cancelButton.setText("Cancel")
-        self.widget.setMinimumWidth(550)
+        self.widget.setMinimumWidth(600)
+        self.setShadowEffect(16, (0, 4), QColor(0, 0, 0, 40))
+
+        self._day_checks: dict[str, CheckBox] = {}
 
         self._setup_ui()
         self._populate()
@@ -107,6 +112,43 @@ class JobDialog(MessageBoxBase):
         self._window_check.setOffText("No (Continuous)")
         self._window_check.checkedChanged.connect(self._toggle_time_fields)
         form.addRow(BodyLabel("Transfer Schedule:", self), self._window_check)
+
+        # Active Days Presets & Checkboxes
+        days_container = QWidget(self)
+        days_layout = QVBoxLayout(days_container)
+        days_layout.setContentsMargins(0, 0, 0, 0)
+        days_layout.setSpacing(6)
+
+        # Preset Buttons
+        presets_layout = QHBoxLayout()
+        self._btn_weekdays = PushButton("Weekdays (M-F)", self)
+        self._btn_weekdays.clicked.connect(self._set_weekdays)
+        presets_layout.addWidget(self._btn_weekdays)
+
+        self._btn_everyday = PushButton("Everyday", self)
+        self._btn_everyday.clicked.connect(self._set_everyday)
+        presets_layout.addWidget(self._btn_everyday)
+
+        self._btn_weekends = PushButton("Weekends", self)
+        self._btn_weekends.clicked.connect(self._set_weekends)
+        presets_layout.addWidget(self._btn_weekends)
+        presets_layout.addStretch()
+        days_layout.addLayout(presets_layout)
+
+        # Checkboxes for Mon-Sun
+        checks_layout = QHBoxLayout()
+        checks_layout.setSpacing(8)
+        self._days_list = [("Mon", "Mon"), ("Tue", "Tue"), ("Wed", "Wed"), ("Thu", "Thu"), ("Fri", "Fri"), ("Sat", "Sat"), ("Sun", "Sun")]
+        for day_code, day_name in self._days_list:
+            cb = CheckBox(day_name, self)
+            cb.setChecked(True)
+            self._day_checks[day_code] = cb
+            checks_layout.addWidget(cb)
+        checks_layout.addStretch()
+        days_layout.addLayout(checks_layout)
+
+        self._days_widget = days_container
+        form.addRow(BodyLabel("Active Days:", self), self._days_widget)
         
         # Start Time
         self._start_time = QTimeEdit(self)
@@ -123,10 +165,27 @@ class JobDialog(MessageBoxBase):
         self.viewLayout.addLayout(form)
         self._toggle_time_fields()
 
+    def _set_weekdays(self):
+        weekdays = {"Mon", "Tue", "Wed", "Thu", "Fri"}
+        for day_code, cb in self._day_checks.items():
+            cb.setChecked(day_code in weekdays)
+
+    def _set_everyday(self):
+        for cb in self._day_checks.values():
+            cb.setChecked(True)
+
+    def _set_weekends(self):
+        weekends = {"Sat", "Sun"}
+        for day_code, cb in self._day_checks.items():
+            cb.setChecked(day_code in weekends)
+
     def _toggle_time_fields(self):
         is_window = self._window_check.isChecked()
         self._start_time.setEnabled(is_window)
         self._end_time.setEnabled(is_window)
+        self._days_widget.setEnabled(is_window)
+        for cb in self._day_checks.values():
+            cb.setEnabled(is_window)
 
     def _populate(self):
         """Fill fields from the existing job."""
@@ -153,6 +212,11 @@ class JobDialog(MessageBoxBase):
         except (ValueError, AttributeError):
             self._end_time.setTime(QTime(6, 0))
 
+        # Days of week
+        job_days = set(self._job.days_of_week if self._job.days_of_week else ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+        for day_code, cb in self._day_checks.items():
+            cb.setChecked(day_code in job_days)
+
     def _browse_source(self):
         folder = QFileDialog.getExistingDirectory(
             self, "Select Source Folder", self._source_edit.text()
@@ -178,6 +242,12 @@ class JobDialog(MessageBoxBase):
         self._job.schedule_mode = "window" if self._window_check.isChecked() else "continuous"
         self._job.window_start = self._start_time.time().toString("HH:mm")
         self._job.window_end = self._end_time.time().toString("HH:mm")
+
+        # Collect checked days
+        selected_days = [day_code for day_code, cb in self._day_checks.items() if cb.isChecked()]
+        if not selected_days and self._job.schedule_mode == "window":
+            selected_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        self._job.days_of_week = selected_days if selected_days else ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
         errors = self._job.validate()
         if errors:

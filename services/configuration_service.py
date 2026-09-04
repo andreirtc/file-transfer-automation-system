@@ -42,6 +42,8 @@ _DEFAULTS: dict[str, Any] = {
     "auto_cleanup_days": 7,              # days to retain source files after completed transfer before auto-cleanup
     "batch_compression_enabled": True,   # compress all queued files into a single zip
     "zip_password": "password123",       # default password for zip files
+    "max_concurrent_transfers": 1,       # max simultaneous job batch transfers (1=sequential, 0=unlimited)
+    "transfer_threads": 4,               # parallel file transfer threads per job (/MT)
 }
 
 
@@ -195,6 +197,14 @@ class ConfigurationService:
     @property
     def zip_password(self) -> str:
         return self.get_str("zip_password", "password123")
+
+    @property
+    def max_concurrent_transfers(self) -> int:
+        return self.get_int("max_concurrent_transfers", 1)
+
+    @property
+    def transfer_threads(self) -> int:
+        return self.get_int("transfer_threads", 4)
 
     @property
     def all_settings(self) -> dict[str, Any]:

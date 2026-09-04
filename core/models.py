@@ -126,11 +126,27 @@ class TransferJob:
     schedule_mode: str = "continuous"  # "continuous" or "window"
     window_start: str = "23:00"
     window_end: str = "06:00"
+    days_of_week: list[str] = field(default_factory=lambda: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
     created_at: Optional[datetime] = None
 
     def __post_init__(self):
         if self.created_at is None:
             self.created_at = datetime.now()
+        if not self.days_of_week:
+            self.days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    @property
+    def days_display_str(self) -> str:
+        """Human-readable display of scheduled days."""
+        all_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        if set(self.days_of_week) == set(all_days):
+            return "Everyday"
+        if set(self.days_of_week) == set(["Mon", "Tue", "Wed", "Thu", "Fri"]):
+            return "Mon–Fri"
+        if set(self.days_of_week) == set(["Sat", "Sun"]):
+            return "Weekends"
+        ordered = [d for d in all_days if d in self.days_of_week]
+        return ", ".join(ordered) if ordered else "None"
 
     @property
     def source_path(self) -> Path:

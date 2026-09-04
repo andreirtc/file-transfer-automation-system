@@ -63,29 +63,32 @@ class UserDocumentationDialog(MessageBoxBase):
                 </li>
             </ul>
 
-            <h2>2. Sequential Global Transfer Queue</h2>
-            <p>To eliminate disk thrashing, network saturation, and UI latency when managing multiple jobs simultaneously, the system features a <b>Sequential Global Transfer Queue</b>:</p>
+            <h2>2. Multi-Job Concurrency & Global Transfer Queue</h2>
+            <p>To maximize throughput while preserving network and disk stability, the system incorporates an intelligent <b>Concurrent Worker Pool</b> and FIFO queue:</p>
             <ul>
                 <li>All enabled jobs monitor their source directories concurrently in the background.</li>
-                <li>When scheduled window end-times arrive or batch transfers trigger, batches are placed into a central FIFO queue.</li>
-                <li>The active job displays <span class="badge" style="background-color: #EFF6FF; color: #1D4ED8;">TRANSFERRING</span>, while subsequent jobs display <span class="badge" style="background-color: #FFFBEB; color: #B45309;">QUEUED (IN LINE)</span>.</li>
-                <li>As soon as one batch completes, the next queued job immediately commences transfer without manual intervention.</li>
+                <li>When scheduled window end-times arrive or batch transfers trigger, directory sweeps run in parallel across a thread pool.</li>
+                <li>Jobs are queued in strict alphabetical order and dispatched up to <code>max_concurrent_transfers</code> (default: 3 simultaneous jobs).</li>
+                <li>Active jobs display <span class="badge" style="background-color: #EFF6FF; color: #1D4ED8;">TRANSFERRING</span>, while subsequent jobs display <span class="badge" style="background-color: #FFFBEB; color: #B45309;">QUEUED (IN LINE)</span>.</li>
+                <li>As soon as any active job completes, the next queued job immediately commences transfer without manual intervention.</li>
             </ul>
 
-            <h2>3. Real-Time Live Progress Bars</h2>
+            <h2>3. Real-Time Live Progress Bars & Instant Reporting</h2>
             <p>Each job card on the Main Dashboard provides a real-time progress bar that dynamically updates through each transfer phase:</p>
             <ul>
-                <li><b>Compressing Archive:</b> Shows live percentage progress as files are packaged into the encrypted zip archive.</li>
+                <li><b>Instant 0-Second Display:</b> Precalculates total batch size in memory and flushes <code>0% · 0.0 MB / Total MB</code> on millisecond 0.</li>
+                <li><b>Compressing Archive:</b> Shows live percentage progress and byte throughput as files are packaged into the encrypted zip archive.</li>
                 <li><b>Transferring Archive:</b> Shows active byte transfer throughput (<code>XX.X MB / YY.Y MB</code>) and transfer speed.</li>
                 <li><b>Verifying SHA-256:</b> Displays cryptographic hash verification progress ensuring byte-for-byte data integrity.</li>
             </ul>
 
-            <h2>4. Batch Compression & ZipCrypto Encryption</h2>
+            <h2>4. Batch Compression & WinZip AES-256 Encryption</h2>
             <p>When batch compression is enabled, queued files are consolidated into a single password-protected zip file:</p>
             <ul>
-                <li><b>Native Windows Compatibility:</b> Encrypted using standard ZipCrypto, allowing recipients to extract archives directly in Windows Explorer without requiring third-party tools.</li>
+                <li><b>Modern AES-256 Encryption:</b> Powered by <code>pyzipper</code> with native Zip64 support for huge archives exceeding 4 GB (up to terabytes). Seamless fallback to <code>pyminizip</code> and standard <code>zipfile</code>.</li>
                 <li><b>Automated Naming:</b> Archives are automatically named by date and window start time (e.g., <code>2026-08-19_230000.zip</code>).</li>
                 <li><b>Password Configuration:</b> Configure the default archive password in <b>Settings</b>.</li>
+                <li><b>Mid-Compression Deletion Safeguard:</b> If any file is deleted from source during active compression, the worker automatically discards the partial archive, logs an announcement, and restarts cleanly with the remaining valid files.</li>
             </ul>
 
             <h2>5. Dual-Verified Source File Retention</h2>
@@ -101,23 +104,37 @@ class UserDocumentationDialog(MessageBoxBase):
                 </li>
             </ul>
 
-            <h2>6. Execution States Reference</h2>
+            <h2>6. Status & Lifecycle Reference Guide</h2>
+            <p>The system tracks status at two levels: <b>Job Execution State</b> (on Dashboard cards) and <b>File Lifecycle Status</b> (in Job Workspace table):</p>
+            
+            <h3>Job-Level Execution States (Main Dashboard Badges)</h3>
             <table>
-                <tr><th>State Badge</th><th>Description</th></tr>
+                <tr><th>Badge</th><th>Description</th></tr>
                 <tr><td><span class="badge" style="background-color: #EFF6FF; color: #1D4ED8;">TRANSFERRING</span></td><td>Active byte copy, compression, or verification running in background.</td></tr>
-                <tr><td><span class="badge" style="background-color: #FFFBEB; color: #B45309;">QUEUED (IN LINE)</span></td><td>Waiting in the Sequential FIFO Queue for the active transfer to finish.</td></tr>
+                <tr><td><span class="badge" style="background-color: #FFFBEB; color: #B45309;">QUEUED (IN LINE)</span></td><td>Waiting in the Sequential FIFO Queue for an available worker slot.</td></tr>
                 <tr><td><span class="badge" style="background-color: #F0FDF4; color: #15803D;">MONITORING</span></td><td>Background file watcher is active and listening for filesystem events.</td></tr>
                 <tr><td><span class="badge" style="background-color: #FFFBEB; color: #92400E;">WAITING (OUTSIDE WINDOW)</span></td><td>Files detected and stable; holding until scheduled window end-time.</td></tr>
                 <tr><td><span class="badge" style="background-color: #F3F4F6; color: #4B5563;">IDLE / STOPPED</span></td><td>Job monitoring is stopped or paused.</td></tr>
             </table>
 
-            <h2>7. Deployment & Standalone Executable</h2>
-            <p>The system can be compiled into a standalone Windows executable (<code>FileTransferAutomationSystem.exe</code>) that runs on any machine without installing Python:</p>
-            <ul>
-                <li>Run <code>build_exe.bat</code> to compile the standalone binary into <code>dist/FileTransferAutomationSystem/</code>.</li>
-                <li>Run <code>setup.bat</code> for 1-click Python virtual environment setup on developer/test machines.</li>
-                <li>Run <code>run_app.bat</code> to launch the application with a single click.</li>
-            </ul>
+            <h3>File-Level Lifecycle Statuses (Job Workspace Table)</h3>
+            <table>
+                <tr><th>Status</th><th>Meaning & Description</th></tr>
+                <tr><td><code>DETECTED</code></td><td>New file discovered; initial lock and stability checks underway.</td></tr>
+                <tr><td><code>PROCESSING</code></td><td>File size is being monitored across intervals to ensure it is finished being written.</td></tr>
+                <tr><td><code>WAITING_FOR_WINDOW</code></td><td>File is stable and ready, holding until the scheduled backup window.</td></tr>
+                <tr><td><code>READY</code></td><td>File is completely written and ready to transfer.</td></tr>
+                <tr><td><code>QUEUED</code></td><td>File is queued in memory for an active worker slot.</td></tr>
+                <tr><td><code>TRANSFERRING</code></td><td>Bytes are actively copying or compressing into destination archive.</td></tr>
+                <tr><td><code>VERIFYING</code></td><td>Computing and matching SHA-256 cryptographic hashes.</td></tr>
+                <tr><td><code>COMPLETED</code></td><td>File transfer succeeded and verified 100% identical to source.</td></tr>
+                <tr><td><code>FAILED</code></td><td>Transfer error occurred (network disconnect, disk full, etc.). Select and click "Retry Failed".</td></tr>
+                <tr><td><code>SKIPPED</code></td><td>Intentionally omitted (e.g. duplicate file already transferred, or deleted by operator).</td></tr>
+                <tr><td><code>CONFLICT</code></td><td>File with same name exists at destination with different size/date.</td></tr>
+            </table>
+
+            <h2>7. IT Administrator Handbook & Troubleshooting</h2>
+            <p>For complete step-by-step operating procedures, network share configuration, and practical troubleshooting scenarios, open the interactive <b>Documentation</b> page in the bottom-left sidebar.</p>
         </body>
         </html>
         """

@@ -1,25 +1,28 @@
 # File Transfer Automation System
 
-An enterprise-grade desktop application that automates secure, one-way file copying between source and destination directories with active stability checks, end-to-end SHA-256 cryptographic verification, sequential queue dispatching, batch ZipCrypto archive encryption, dual-verification source cleanup, and persistent SQLite transfer history.
+An enterprise-grade desktop application that automates secure, one-way file copying and encrypted archiving between source directories and destination network shares. Features active Windows lock detection, stability verification, multi-job concurrent worker pool execution, WinZip AES-256 encryption via `pyzipper`, end-to-end SHA-256 cryptographic verification, dual-verification source file cleanup, persistent SQLite transfer history, and an interactive in-app Administrator Documentation system.
 
-Designed with a Windows 11 Fluent interface for high-throughput server backups, network share synchronization, and unattended scheduled batch transfers.
+Designed with a high-performance Windows 11 Fluent interface optimized for high-throughput server backups, network share synchronization (SMB/UNC), and unattended scheduled batch transfers.
 
 ---
 
 ## Key Features
 
-- **Concurrent Multi-Job Monitoring** — Simultaneously monitors multiple source folders using OS-native filesystem events (`watchdog`) and scheduled reconciliation polling.
-- **Sequential Global Transfer Queue** — Dispatches file batches across multiple jobs through a central FIFO queue to eliminate disk thrashing, lock contention, and OS thread freezes.
-- **Live Real-Time Progress Bars** — Provides dynamic visual progress bars on each job overview card, streaming real-time status across compression, copy throughput (`XX MB / YY MB`), and SHA-256 hash checks.
-- **Incomplete File Protection** — Actively watches file sizes and Windows locks across consecutive stability checks to guarantee incomplete or growing files are never transferred prematurely.
-- **Scheduled Transfer Windows** — Supports continuous mode and scheduled transfer windows (e.g., overnight backups). Files accumulate safely throughout the day and automatically transfer in a consolidated batch at the configured window end-time.
-- **Batch ZipCrypto Archive Encryption** — Automatically bundles queued files into password-protected ZIP archives compatible with native Windows Explorer (no third-party extraction tools required).
-- **Isolated Compression Subprocess** — Runs archive compression in an isolated child process to ensure zero Python Global Interpreter Lock (GIL) contention and 100% smooth UI responsiveness.
-- **Dual-Verified Source File Retention** — Configurable retention policy (1 to 365 days) that safely deletes source files only after confirming successful transfer and destination existence.
-- **End-to-End SHA-256 Verification** — Every transferred file is verified by computing and matching full cryptographic checksums before marking as completed.
-- **Safe Copy Strategy** — Writes to hidden temporary files first (`.filename.transfer_tmp`), verifies integrity, and atomically commits to the final destination path.
-- **Duplicate & Modification Detection** — Recognizes already-transferred files to prevent redundant transfers while detecting modified files as new versions.
-- **Persistent SQLite Database** — Stores all transfer jobs and file-level history across application restarts with automatic crash-state recovery.
+- **Concurrent Multi-Job Monitoring** — Simultaneously monitors unlimited source folders using OS-native filesystem events (`watchdog`) and scheduled reconciliation polling.
+- **Concurrent Worker Pool & Global Queue** — Dispatches file batches across multiple jobs concurrently up to `max_concurrent_transfers` (default: 3 simultaneous jobs) through a priority FIFO queue, eliminating disk thrashing and thread starvation.
+- **Parallel Window-End Directory Sweeps** — When scheduled windows arrive, directory scans run in parallel across a thread pool, queuing jobs in strict alphabetical order and launching all concurrent workers simultaneously.
+- **Batch WinZip AES-256 Archive Encryption** — Automatically bundles queued files into password-protected ZIP archives using `pyzipper` with native Zip64 support for archives exceeding 4 GB (up to terabytes), with seamless fallback to `pyminizip` and standard `zipfile`.
+- **Isolated Compression Subprocess** — Runs archive compression in an isolated child process to bypass Python Global Interpreter Lock (GIL) contention, keeping the user interface smooth and responsive.
+- **Real-Time Mid-Compression Deletion Safeguard** — Actively polls file existence every 500ms during compression. If an active file is deleted during compression, the partial archive is destroyed, an announcement is logged, and compression automatically restarts cleanly with remaining files.
+- **Live 0-Second Progress Bars** — Precalculates batch byte sizes upfront and streams real-time stdout events (`PROGRESS_BYTES:X:Y`), updating job progress bars (`XX.X MB / YY.Y MB`) from millisecond 0.
+- **Incomplete File Protection & Windows Locks** — Actively tests file sizes and low-level Windows locks (`msvcrt.locking`) across consecutive stability cycles to guarantee incomplete, growing, or open files are never transferred prematurely.
+- **Scheduled Transfer Windows** — Supports continuous mode and scheduled transfer windows (e.g., overnight backups). Files accumulate safely during the day and automatically consolidate at the configured window end-time.
+- **Dual-Verified Source File Retention** — Configurable retention policy (1 to 365 days) that safely deletes source files only after confirming successful transfer, destination existence, and source presence.
+- **End-to-End SHA-256 Verification** — Every transferred file and archive is verified by computing and matching full cryptographic checksums before marking as completed.
+- **Safe Copy Strategy** — Writes to hidden temporary files first (`.filename.transfer_tmp`), verifies integrity, and atomically commits to the final destination path via `os.replace()`.
+- **SMB / UNC Network Share Resilience** — Features root share reachability checks, 50ms existence debouncing, and rate-limited GUI signal throttling (100ms per thread) to prevent SMB socket credit exhaustion.
+- **Interactive In-App Administrator Manual** — Built-in multi-topic documentation viewer accessible directly from the sidebar navigation, providing instant access to technical specs, transfer protocols, archiving libraries, and administrator FAQs.
+- **Persistent SQLite Database** — Stores all transfer jobs and file-level history across application restarts with automatic crash-state recovery, thread-safe write locks, and Write-Ahead Logging (WAL).
 - **Standalone Windows Executable (`.exe`)** — Ships with 1-click compiler (`build_exe.bat`) and portable distribution (`dist/FileTransferAutomationSystem/`) requiring zero Python installation on target machines.
 
 ---
@@ -29,32 +32,55 @@ Designed with a Windows 11 Fluent interface for high-throughput server backups, 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                   Windows 11 Fluent UI (PySide6)                        │
-│  ┌─────────────────────────┐  ┌──────────────────────────────────────┐  │
-│  │ Main Dashboard          │  │ Job Workspace                        │  │
-│  │ (KPIs, Multi-Job Cards, │  │ (File-Level Transfer Table, Filter,  │  │
-│  │  Live Activity Feed)    │  │  Retry & Window Override Actions)    │  │
-│  └────────────┬────────────┘  └──────────────────┬───────────────────┘  │
-└───────────────┼──────────────────────────────────┼──────────────────────┘
-                │ Qt Multi-Job Signals & Live Bus  │
-┌───────────────┴──────────────────────────────────┴──────────────────────┐
+│  ┌─────────────────────────┐  ┌──────────────────────┐  ┌────────────┐  │
+│  │ Main Dashboard          │  │ Job Workspace        │  │ Admin Docs │  │
+│  │ (KPIs, Multi-Job Cards, │  │ (File-Level Table,   │  │ (Topics &  │  │
+│  │  Live Activity Feed)    │  │  Override Actions)   │  │  FAQ Guide)│  │
+│  └────────────┬────────────┘  └──────────┬───────────┘  └─────┬──────┘  │
+└───────────────┼──────────────────────────┼────────────────────┼─────────┘
+                │ Qt Multi-Job Signals & Throttled Event Bus    │
+┌───────────────┴──────────────────────────┴────────────────────┴─────────┐
 │                    Transfer Manager (Central Orchestrator)              │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │ Sequential Global Transfer Queue (FIFO Batch Execution)           │  │
+│  │ Concurrent Worker Pool & FIFO Queue (max_concurrent_transfers: 3) │  │
 │  └─────────────────────────────────┬─────────────────────────────────┘  │
-│                                    │ Dispatches Active Job              │
+│                                    │ Dispatches Active Jobs             │
 │  ┌─────────────────────────────────┴─────────────────────────────────┐  │
-│  │ TransferWorker (QThread)                                          │  │
-│  │  ├── Isolated Compression Worker (Subprocess: ZipCrypto)          │  │
-│  │  ├── Transfer Engine (Chunked Copy + Temp Commit)                 │  │
+│  │ Parallel TransferWorker Pool (QThreads)                           │  │
+│  │  ├── Isolated Compression Worker (Subprocess: pyzipper AES-256)   │  │
+│  │  ├── 500ms Mid-Compression Deletion Watcher & Auto-Restart        │  │
+│  │  ├── Transfer Engine (Throttled Chunked Copy + Atomic Rename)     │  │
 │  │  └── Integrity Verifier (Chunked SHA-256 Hash Verification)       │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │
 ┌────────────────────────────────────┴────────────────────────────────────┐
-│ Multi-Job Controllers: Concurrent Watchdog Monitors + Safety Checkers   │
-│ Persistence: SQLite Database (WAL) + JSON Configuration Service         │
+│ Multi-Job Controllers: Watchdog Monitors + Parallel Reconciliation      │
+│ Persistence: Thread-Safe SQLite WAL Database + JSON Configuration       │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Technical Specifications: Transfers & Compression
+
+### What Do We Use to Transfer Files?
+1. **Batch Mode (Default):** When `batch_compression_enabled` is true, all queued files are read in 64 KB binary streaming chunks and consolidated into an encrypted `.tmp_batch_...zip` archive directly in destination staging. After SHA-256 verification, the file is atomically renamed to its timestamped archive name (`YYYY-MM-DD_HHMMSS.zip`).
+2. **Direct Mode:** When batch compression is disabled, files are copied individually via Python's native binary streaming engine with configurable parallel threads (`transfer_threads: 4`). Each thread writes to a hidden temporary file (`.filename.transfer_tmp`), computes SHA-256 on the fly, and atomically commits via `os.replace()`.
+3. **Throttled GUI Progress:** Progress updates from worker threads are throttled to at most once every 100ms per thread, capping GUI signal traffic and preventing Qt event queue starvation.
+
+### What Do We Use to Zip Files & Add Passwords?
+1. **Primary Library: `pyzipper` (WinZip AES-256 / AES-128):**
+   - Uses `pyzipper.AESZipFile` with `encryption=pyzipper.WZ_AES` and `allowZip64=True`.
+   - Provides industry-standard AES-256 encryption.
+   - Natively supports Zip64 extensions for archives exceeding 4 GB (tested up to 500 GB+).
+2. **Fallback Library: `pyminizip` (Standard ZipCrypto):**
+   - Falls back to `pyminizip.compress_multiple()` for standard ZipCrypto password encryption.
+3. **Subprocess Isolation:**
+   - Archive generation runs in a separate child process via `python -m core.compression_worker <config.json>`.
+   - Bypasses the Python Global Interpreter Lock (GIL), maintaining 60 FPS UI fluidity even during peak CPU compression.
+4. **Password Configuration:**
+   - Default archive password can be configured in `config/config.json` (`zip_password`) or modified via the in-app **Settings** dialog.
 
 ---
 
@@ -66,7 +92,8 @@ Designed with a Windows 11 Fluent interface for high-throughput server backups, 
   - `PySide6` >= 6.8 (Qt6 GUI Framework)
   - `PySide6-Fluent-Widgets` >= 1.11.3 (Windows 11 Fluent Design System)
   - `watchdog` >= 4.0 (OS Filesystem Event Monitoring)
-  - `pyminizip` >= 0.2.6 (Standard ZipCrypto Archive Compression)
+  - `pyzipper` >= 0.3.6 (WinZip AES-256 Zip64 Encryption Engine)
+  - `pyminizip` >= 0.2.6 (Fallback ZipCrypto Archive Compression)
   - `Pillow` >= 10.0 (High-Resolution Icon Rendering)
   - `pyinstaller` >= 6.0 (Standalone Binary Compilation)
   - `pytest` >= 8.0 (Automated Test Suite)
@@ -117,15 +144,37 @@ dist/FileTransferAutomationSystem/
 
 ---
 
-## Execution States Reference
+## Status & Lifecycle Reference Guide
+
+The system tracks status at two distinct levels:
+1. **Job-Level Execution State** (displayed as colored badges on the **Main Dashboard job cards**)
+2. **File-Level Lifecycle Status** (displayed in the **Job Workspace table**, Transfer History, and database)
+
+### Job-Level Execution States (Main Dashboard)
 
 | State Badge | Execution Behavior |
 | :--- | :--- |
 | **`TRANSFERRING`** | Active byte transfer, archive compression, or SHA-256 checksum verification in progress. |
-| **`QUEUED (IN LINE)`** | Files are ready and waiting in the Sequential FIFO Queue for the active transfer to finish. |
+| **`QUEUED (IN LINE)`** | Files are ready and waiting in the FIFO Queue for an available worker slot. |
 | **`MONITORING`** | File watcher is active and listening for filesystem events. |
 | **`WAITING (OUTSIDE WINDOW)`** | Files are stabilized and holding until the configured window end-time. |
 | **`IDLE / STOPPED`** | Monitoring is inactive or paused by the user. |
+
+### File-Level Lifecycle Statuses (Job Workspace & History)
+
+| File Status | Description & Lifecycle Meaning |
+| :--- | :--- |
+| **`DETECTED`** | New file discovered in the source folder; undergoing initial Windows lock and stability verification. |
+| **`PROCESSING`** | File size is being monitored across consecutive intervals, or file is actively being packaged into an archive. |
+| **`WAITING_FOR_WINDOW`** | File has stabilized and passed lock checks, holding until the scheduled backup window end-time. |
+| **`READY`** | File is completely written, unlocked, and staged to transfer. |
+| **`QUEUED`** | File has been batched in memory and is waiting for an active worker slot. |
+| **`TRANSFERRING`** | Bytes are actively copying across the network or compressing into the destination archive. |
+| **`VERIFYING`** | File copy finished; calculating and comparing SHA-256 cryptographic checksums. |
+| **`COMPLETED`** | File transfer succeeded 100% and verified identical to source. |
+| **`FAILED`** | Transfer error occurred (network disconnect, disk full, access denied). Actionable via "Retry Failed". |
+| **`SKIPPED`** | Intentionally omitted (duplicate file already transferred previously, or deleted from source before transfer). |
+| **`CONFLICT`** | Destination file exists with differing size/timestamp; handled per Overwrite Policy. |
 
 ---
 
@@ -135,6 +184,10 @@ Configuration values are stored in `config/config.json` and accessible via the i
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
+| `max_concurrent_transfers` | `3` | Maximum simultaneous job batch transfers (1 = sequential, 0 = unlimited). |
+| `transfer_threads` | `4` | Parallel file transfer threads per job for direct transfers (optimal for SMB). |
+| `batch_compression_enabled` | `true` | Consolidates queued files into a password-protected ZIP archive. |
+| `zip_password` | `"password123"` | Default password for encrypted zip archives. |
 | `stability_check_interval` | `5` | Seconds between file stability checks. |
 | `required_stable_checks` | `2` | Number of consecutive unchanged checks required for `READY` status. |
 | `max_retries` | `3` | Maximum retry attempts for failed transfers. |
@@ -144,30 +197,28 @@ Configuration values are stored in `config/config.json` and accessible via the i
 | `automatic_monitoring` | `true` | Auto-starts monitoring on application launch. |
 | `reconciliation_interval` | `30` | Seconds between full folder reconciliation scans. |
 | `overwrite_policy` | `"ask"` | Conflict resolution policy: `"ask"`, `"overwrite"`, or `"skip"`. |
-| `network_drive_mode` | `false` | Optimizes polling parameters for shared network drives / UNC paths. |
-| `auto_cleanup_enabled` | `false` | Enables scheduled dual-verified deletion of old source files. |
+| `network_drive_mode` | `true` | Optimizes polling parameters for shared network drives / UNC paths. |
+| `auto_cleanup_enabled` | `true` | Enables scheduled dual-verified deletion of old source files. |
 | `auto_cleanup_days` | `7` | Retention period in days before transferred source files are eligible for cleanup. |
-| `batch_compression_enabled` | `true` | Consolidates queued files into a password-protected ZIP archive. |
-| `zip_password` | `"password123"` | Default password for encrypted zip archives. |
 
 ---
 
 ## Automated Test Suite
 
-The project includes an extensive test suite covering safety checks, hashing, compression, database CRUD, sequential queue dispatching, and UI progress tracking.
+The project includes an extensive test suite covering safety checks, hashing, compression, database concurrency, multi-job worker pools, and UI progress tracking.
 
 Run the test suite via `pytest`:
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/ -v
 ```
 
-**56 automated tests passing**:
-- `tests/test_compression.py`: Batch compression, window end triggering, sequential FIFO queue execution, and UI progress bar updates.
-- `tests/test_file_safety.py`: Stability detection, growing file handling, lock checking, and preflight verification.
+**72 automated tests passing**:
+- `tests/test_compression.py`: Batch compression, AES-256 encryption, mid-compression deletion handling, window end triggering, multi-job worker pool dispatching, and 0-second progress bar updates.
+- `tests/test_file_safety.py`: Stability detection, growing file handling, Windows lock checking, and preflight verification.
 - `tests/test_integrity.py`: SHA-256 deterministic hashing, corruption detection, and chunked verification.
 - `tests/test_transfer_engine.py`: Safe copy, atomic temp rename, destination creation, and conflict handling.
-- `tests/test_database.py`: Job persistence, transfer records, history queries, and stale-state cleanup.
-- `tests/test_transfer_manager.py`: Full pipeline integration and concurrent multi-job monitoring.
+- `tests/test_database.py`: Job persistence, transfer records, thread-safe concurrency, history queries, and stale-state cleanup.
+- `tests/test_transfer_manager.py`: Full pipeline integration, multi-job concurrent monitoring, and SMB disconnect resilience.
 
 ---
 

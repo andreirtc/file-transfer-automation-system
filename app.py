@@ -28,6 +28,15 @@ def main():
 
     import logging
     logger = logging.getLogger("app")
+
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        logger.critical("Unhandled exception: %s", exc_value, exc_info=(exc_type, exc_value, exc_traceback))
+
+    sys.excepthook = handle_exception
+
     logger.info("=" * 60)
     logger.info("File Transfer Automation System starting")
     logger.info("=" * 60)

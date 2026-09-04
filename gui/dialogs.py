@@ -352,6 +352,38 @@ class SettingsDialog(MessageBoxBase):
         self._zip_password.setText(config.zip_password)
         form.addRow(BodyLabel("Zip Password:", self), self._zip_password)
 
+        # Max Concurrent Job Transfers
+        self._max_concurrent = ComboBox(self)
+        self._max_concurrent.addItem("1 (Strictly Sequential)", userData=1)
+        self._max_concurrent.addItem("2 Jobs at once", userData=2)
+        self._max_concurrent.addItem("3 Jobs at once", userData=3)
+        self._max_concurrent.addItem("4 Jobs at once", userData=4)
+        self._max_concurrent.addItem("5 Jobs at once", userData=5)
+        self._max_concurrent.addItem("All at once (Unlimited)", userData=0)
+        curr_conc = config.max_concurrent_transfers
+        for i in range(self._max_concurrent.count()):
+            if self._max_concurrent.itemData(i) == curr_conc:
+                self._max_concurrent.setCurrentIndex(i)
+                break
+        form.addRow(BodyLabel("Max Concurrent Jobs:", self), self._max_concurrent)
+
+        # Transfer Multi-Threading (/MT)
+        self._transfer_threads = ComboBox(self)
+        self._transfer_threads.addItem("1 (Single Thread)", userData=1)
+        self._transfer_threads.addItem("2 Threads", userData=2)
+        self._transfer_threads.addItem("4 Threads (Recommended)", userData=4)
+        self._transfer_threads.addItem("8 Threads (Fast Network)", userData=8)
+        self._transfer_threads.addItem("16 Threads (High-Performance)", userData=16)
+        self._transfer_threads.addItem("32 Threads (Server)", userData=32)
+        self._transfer_threads.addItem("64 Threads (Enterprise Server)", userData=64)
+        self._transfer_threads.addItem("128 Threads (Max Robocopy Limit)", userData=128)
+        curr_threads = config.transfer_threads
+        for i in range(self._transfer_threads.count()):
+            if self._transfer_threads.itemData(i) == curr_threads:
+                self._transfer_threads.setCurrentIndex(i)
+                break
+        form.addRow(BodyLabel("Transfer Threads (/MT):", self), self._transfer_threads)
+
         self.viewLayout.addLayout(form)
 
     def validate(self) -> bool:
@@ -366,6 +398,8 @@ class SettingsDialog(MessageBoxBase):
         self._config.set("auto_cleanup_days", self._auto_cleanup_days.value())
         self._config.set("batch_compression_enabled", self._batch_compression.isChecked())
         self._config.set("zip_password", self._zip_password.text())
+        self._config.set("max_concurrent_transfers", self._max_concurrent.currentData())
+        self._config.set("transfer_threads", self._transfer_threads.currentData())
         self._config.save()
         return True
 
