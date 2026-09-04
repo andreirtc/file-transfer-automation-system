@@ -11,7 +11,12 @@ if not exist ".venv\Scripts\pyinstaller.exe" (
 )
 
 echo Compiling Windows Standalone Executable with PyInstaller...
-.venv\Scripts\pyinstaller.exe --noconfirm --onedir --windowed --icon "assets/app_icon.ico" --add-data "assets;assets" --add-data "config;config" --hidden-import "pyminizip" --hidden-import "watchdog" --hidden-import "qfluentwidgets" --hidden-import "core.compression_worker" --name "FileTransferAutomationSystem" app.py
+.venv\Scripts\pyinstaller.exe --noconfirm --onedir --windowed --icon "assets/app_icon.ico" --add-data "assets;assets" --add-data "config;config" --add-data "templates;templates" --hidden-import "pyminizip" --hidden-import "watchdog" --hidden-import "qfluentwidgets" --hidden-import "openpyxl" --hidden-import "core.compression_worker" --name "FileTransferAutomationSystem" app.py
+
+if not exist "dist\FileTransferAutomationSystem\templates" mkdir "dist\FileTransferAutomationSystem\templates"
+if not exist "dist\FileTransferAutomationSystem\reports" mkdir "dist\FileTransferAutomationSystem\reports"
+copy /y "templates\*.*" "dist\FileTransferAutomationSystem\templates\" >nul 2>&1
+copy /y "config\*.*" "dist\FileTransferAutomationSystem\config\" >nul 2>&1
 
 echo.
 echo ========================================================

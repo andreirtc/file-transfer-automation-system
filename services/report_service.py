@@ -47,7 +47,14 @@ class ReportService:
     @property
     def template_path(self) -> Path:
         """Path to the master Excel template."""
-        return get_app_dir() / "templates" / "TFSPH_Daily_Backup_Checklist_Template.xlsx"
+        app_dir = get_app_dir()
+        p1 = app_dir / "templates" / "TFSPH_Daily_Backup_Checklist_Template.xlsx"
+        if p1.exists():
+            return p1
+        p2 = app_dir / "_internal" / "templates" / "TFSPH_Daily_Backup_Checklist_Template.xlsx"
+        if p2.exists():
+            return p2
+        return p1
 
     @property
     def reports_dir(self) -> Path:
