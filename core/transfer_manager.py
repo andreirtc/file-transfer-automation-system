@@ -188,7 +188,35 @@ class TransferWorker(QThread):
             else:
                 time_str = datetime.now().strftime("%H%M%S")
 
-            base_zip_name = f"{date_str}_{time_str}"
+            # Check if there is a configured pattern in checklist_systems for this job
+            matching_pattern = None
+            if job and self._config:
+                job_name_upper = job.name.upper()
+                checklist_systems = getattr(self._config, "checklist_systems", [])
+                if isinstance(checklist_systems, list):
+                    for sys_cfg in checklist_systems:
+                        if not isinstance(sys_cfg, dict):
+                            continue
+                        cfg_job_name = str(sys_cfg.get("job_name", "")).strip().upper()
+                        cfg_linked_job = str(sys_cfg.get("linked_job", "")).strip().upper()
+                        if (
+                            cfg_job_name == job_name_upper
+                            or (cfg_linked_job and cfg_linked_job not in ("(MATCH BY NAME)", "(NONE)", "AUTO") and cfg_linked_job == job_name_upper)
+                            or (cfg_linked_job and cfg_linked_job == job.id.upper())
+                        ):
+                            pat = sys_cfg.get("pattern")
+                            if pat:
+                                matching_pattern = pat
+                                break
+
+            if matching_pattern:
+                from services.report_service import ReportService
+                # Resolve date tags in pattern (e.g. <YYYYMMDD>, <MM-DD-YYYY>, etc.)
+                resolved_base = ReportService._resolve_pattern(matching_pattern, datetime.now().date())
+                base_zip_name = resolved_base
+            else:
+                base_zip_name = f"{date_str}_{time_str}"
+
             temp_zip_name = f"{base_zip_name}.zip"
 
             if job and job.destination_folder:

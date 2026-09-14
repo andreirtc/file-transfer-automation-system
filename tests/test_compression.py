@@ -1160,6 +1160,64 @@ def test_job_card_update_progress_100gb_format(qapp):
     assert "90.00 GB / 90.00 GB" in card._progress_label.text()
 
 
+def test_batch_compression_uses_checklist_pattern_filename(tmp_source_dir, tmp_dest_dir, test_db, config):
+    """Verify that batch compression names the zip matching checklist_systems pattern (e.g. CSE_BACKUP_MM-DD-YYYY.zip)."""
+    from datetime import datetime
+
+    config.set("batch_compression_enabled", True)
+    config.set("zip_password", "")
+    config.set("checklist_systems", [
+        {
+            "no": 2,
+            "job_name": "CSE",
+            "linked_job": "002",
+            "pattern": "CSE_BACKUP_<MM-DD-YYYY>",
+            "file_type": "RAR",
+            "description": "PSR (CSE) Backup",
+            "expected_location": ""
+        }
+    ])
+
+    job = TransferJob(
+        name="002",
+        source_folder=str(tmp_source_dir),
+        destination_folder=str(tmp_dest_dir),
+        schedule_mode="window",
+    )
+    test_db.save_job(job)
+
+    src = tmp_source_dir / "sample_cse.txt"
+    src.write_text("CSE payload data")
+
+    record = TransferRecord(
+        job_id=job.id,
+        file_name=src.name,
+        source_path=str(src),
+        destination_path=str(tmp_dest_dir / src.name),
+        file_size=src.stat().st_size,
+        source_modified=src.stat().st_mtime,
+        status=FileStatus.READY,
+        override_window=True,
+    )
+    test_db.save_record(record)
+
+    manager = TransferManager(config, test_db)
+    manager.set_job(job)
+    manager._active_records[record.source_path] = record
+
+    manager.transfer_ready_files()
+    if manager._worker:
+        manager._worker.wait(10000)
+
+    assert record.status == FileStatus.COMPLETED
+    expected_pattern_stem = f"CSE_BACKUP_{datetime.now().strftime('%m-%d-%Y')}"
+    zip_path = Path(record.destination_path)
+    assert zip_path.exists()
+    assert expected_pattern_stem in zip_path.name
+    assert zip_path.name.endswith(".zip")
+
+
+
 
 
 
