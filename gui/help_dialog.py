@@ -91,17 +91,22 @@ class UserDocumentationDialog(MessageBoxBase):
                 <li><b>Mid-Compression Deletion Safeguard:</b> If any file is deleted from source during active compression, the worker automatically discards the partial archive, logs an announcement, and restarts cleanly with the remaining valid files.</li>
             </ul>
 
-            <h2>5. Dual-Verified Source File Retention</h2>
-            <p>The system enforces safe source file cleanup to prevent premature data loss:</p>
+            <h2>5. Comprehensive Safety Checks & Incremental Multi-Day Lifecycle</h2>
+            <p>The system enforces twelve automated safety and validity checks to protect server operations:</p>
             <ul>
-                <li><b>Configurable Retention Period:</b> In <b>Settings</b>, configure <b>Cleanup Retention (Days)</b> (range: 1 to 365 days; default: 7 days).</li>
-                <li><b>Dual-Verification Rule:</b> Source files are deleted if and only if:
-                    <ol>
-                        <li>The file was transferred at least <i>N</i> days ago.</li>
-                        <li>The transfer is verified as completed and the file exists in the destination.</li>
-                        <li>The original file is still detected at the source.</li>
-                    </ol>
+                <li><b>Multi-Cycle Size & Timestamp Stability:</b> Verifies files maintain the identical byte length across consecutive polling checks and <code>st_mtime</code> has stopped changing before queueing.</li>
+                <li><b>Low-Level Windows Lock Detection:</b> Tests exclusive non-blocking OS file locks (<code>msvcrt.locking</code>) so actively written files are never touched prematurely.</li>
+                <li><b>Final Pre-Transfer Re-Check:</b> Re-verifies source existence, size, and exclusive access milliseconds before reading.</li>
+                <li><b>Mid-Compression Deletion Safeguard:</b> Automatically destroys partial archives and cleanly restarts if an active file is deleted mid-compression.</li>
+                <li><b>Incremental Multi-Day File Lifecycle (Monday vs. Tuesday):</b>
+                    <br>When Monday's 6 files complete, they are stored in SQLite with exact signatures (path + size + timestamp) as <code>COMPLETED</code>. On Tuesday, when 6 new files appear (12 total), the system checks the database, drops the 6 Monday files from re-transferring, and queues only the 6 new files.
+                    <br>In the <b>Job Workspace table</b>, Monday's files are prominently tagged <span class="badge" style="background-color: #DCFCE7; color: #15803D;">COMPLETED</span>, while Tuesday's new files appear as <span class="badge" style="background-color: #FFFBEB; color: #92400E;">WAITING_FOR_WINDOW</span> or <span class="badge" style="background-color: #EFF6FF; color: #1D4ED8;">TRANSFERRING</span>. Files omitted by policy are tagged <span class="badge" style="background-color: #F1F5F9; color: #475569;">SKIPPED</span>.
                 </li>
+                <li><b>Atomic Safe Copy:</b> Streams into hidden <code>.{filename}.transfer_tmp</code> files first, committing via <code>os.replace()</code> only after 100% successful verification.</li>
+                <li><b>End-to-End SHA-256 Checksums:</b> Full cryptographic verification on source and destination copies using dynamic 8 MB memory buffers.</li>
+                <li><b>Dual-Verified Retention Cleanup:</b> Deletes source files only after confirming transfer completion, age &gt; <i>N</i> days, destination existence, and exact byte size matching.</li>
+                <li><b>64-Bit Zip64 Architecture:</b> Unlimited archive sizes up to 16 Exabytes with zero 32-bit integer limits or 4 GB caps.</li>
+                <li><b>Excel File Lock Safeguard:</b> Automatically writes to <code>..._latest.xlsx</code> if the daily checklist is currently open in Microsoft Excel.</li>
             </ul>
 
             <h2>6. Status & Lifecycle Reference Guide</h2>

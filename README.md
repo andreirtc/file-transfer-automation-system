@@ -185,6 +185,28 @@ The system tracks status at two distinct levels:
 
 ---
 
+## Comprehensive Safety, Validity & Integrity Architecture (12 Automated Checks)
+
+The system incorporates twelve distinct, automated validity and safety checks across every layer of the file transfer lifecycle:
+
+1. **Multi-Cycle Size Stability Verification**: Monitored by `FileSafetyChecker`. Files must maintain the exact same byte length across consecutive polling intervals (`stability_interval: 5s`, `required_stable_checks: 2`) before being declared `READY`, preventing partial transfer of growing/downloading files.
+2. **Modification Timestamp Stability Verification**: Verifies `st_mtime` has stopped changing, catching background processes appending data without immediate size flushes.
+3. **OS-Level Exclusive File Lock Detection (`msvcrt.locking`)**: Uses low-level Windows C-runtime non-blocking locking. If another application (e.g. database backup agent, archiving tool, open editor) holds an open write handle, the lock fails with `OSError` and the file stays safely in `PROCESSING` status.
+4. **Final Pre-Transfer Safety Re-Check**: Milliseconds before the transfer engine reads any bytes, it re-verifies that the source file still exists, its size matches the measured stability size, and it can be opened exclusively without contention.
+5. **Real-Time Mid-Compression Deletion Safeguard**: A dedicated background watcher polls file existence every 500ms–1.5s during active compression. If a source file is deleted mid-transfer, the compression helper process is instantly terminated, the incomplete partial `.zip` is destroyed, the deleted file is marked `SKIPPED`, and compression restarts cleanly with remaining files.
+6. **Incremental Multi-Day File Lifecycle & Workspace Tagging (The "Monday vs. Tuesday" Scenario)**:
+   - **Exact Signature Matching (`check_already_transferred`)**: When Monday's 6 files transfer, SQLite records their exact `job_id`, `source_path`, `file_size`, and `source_modified` timestamp with status `COMPLETED`.
+   - **Daily Re-Scan Filtering**: On Tuesday, when 6 new files appear (12 total in source folder), the scanner evaluates all 12 against SQLite. The 6 Monday files match existing `COMPLETED` records and are **dropped immediately** (never re-transferred). Only the 6 new files are queued for Tuesday's backup.
+   - **Job Workspace Display**: In the **Job Workspace** table, Monday's files are prominently displayed with the green **`COMPLETED`** badge and Monday's completion timestamp. Tuesday's new files display **`WAITING_FOR_WINDOW`** / **`TRANSFERRING`**, transitioning to **`COMPLETED`** upon transfer. Any file omitted by policy or duplicate destination detection is explicitly tagged **`SKIPPED`**.
+7. **Destination Conflict & Collision Detection Policy**: Before copying, checks if the target file exists. If hashes match, it marks the file `COMPLETED`/`SKIPPED` to save bandwidth; if contents differ, it enforces the configured `overwrite_policy` (`ask`, `overwrite`, `skip`, `cancel`).
+8. **Atomic Hidden Temporary File Staging (Safe Copy)**: Files and ZIP archives are written to hidden temporary files first (`.{filename}.transfer_tmp`). Only after transfer finishes and post-copy verification passes is the temporary file atomically committed using `os.replace()`, ensuring destination folders never contain broken or half-written files.
+9. **Dual-Verified Source File Retention & Auto-Cleanup**: When `auto_cleanup_enabled` is active, source files are purged only after satisfying a strict 4-point verification rule: (1) marked `COMPLETED` in SQLite, (2) older than `auto_cleanup_days` (1–365 days), (3) destination file physically exists, and (4) destination file size matches down to the exact byte.
+10. **Cryptographic End-to-End SHA-256 Integrity Verification**: Independently reads both source and destination copies using dynamic 8 MB memory buffers to compute full 256-bit SHA-256 hashes. Any mismatch causes the destination file to be erased and marked `FAILED`.
+11. **64-Bit Unlimited Zip64 Architecture (100+ GB Scaling)**: Uses native Qt `qint64` signals and Python `force_zip64=True` streaming with bundled `pyzipper` AES-256 encryption. Eliminates 32-bit integer limits (2.14 GB `OverflowError`) and the 4 GB ZIP member limit, supporting 100+ GB single files and archives up to 16 Exabytes.
+12. **Microsoft Excel Workbook File Lock Safeguard (`[Errno 13]`)**: Catches Windows `PermissionError` when the daily checklist workbook is open in Microsoft Excel, writing to `..._latest.xlsx` fallback and alerting the operator via in-app banner.
+
+---
+
 ## Configuration Settings
 
 Configuration values are stored in `config/config.json` and accessible via the in-app **Settings** dialog:
