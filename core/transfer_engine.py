@@ -271,7 +271,8 @@ class TransferEngine:
         import time
         total_size = source.stat().st_size
         bytes_copied = 0
-        chunk_size = max(self._integrity._chunk_size, 1048576)
+        # Use 8 MB chunks for large files (> 1 GB) for maximum sequential throughput; 1 MB otherwise
+        chunk_size = max(self._integrity._chunk_size, 1024 * 1024 * 8 if total_size > 1024 * 1024 * 1024 else 1048576)
         last_callback_time = 0.0
 
         with open(source, "rb") as src, open(destination, "wb") as dst:

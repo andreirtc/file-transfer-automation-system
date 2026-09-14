@@ -344,19 +344,31 @@ class JobOverviewCard(QFrame):
             pct = max(0, min(100, pct))
             self._progress_bar.setValue(pct)
             self._progress_percent.setText(f"{pct}%")
+
+            def _fmt_size(num_bytes: int) -> str:
+                if num_bytes >= 1024 * 1024 * 1024:
+                    return f"{num_bytes / (1024 ** 3):.2f} GB"
+                elif num_bytes >= 1024 * 1024:
+                    return f"{num_bytes / (1024 ** 2):.1f} MB"
+                elif num_bytes >= 1024:
+                    return f"{num_bytes / 1024:.1f} KB"
+                return f"{num_bytes} B"
+
             if phase == "compressing":
                 if total > 10000:  # Byte-based progress
-                    cur_mb = current / (1024 * 1024)
-                    tot_mb = total / (1024 * 1024)
-                    self._progress_label.setText(f"Compressing Archive ({pct}% · {cur_mb:.1f} MB / {tot_mb:.1f} MB)")
+                    self._progress_label.setText(
+                        f"Compressing Archive ({pct}% · {_fmt_size(current)} / {_fmt_size(total)})"
+                    )
                 else:  # File-count fallback
                     self._progress_label.setText(f"Compressing Archive ({pct}% · {current}/{total} files)")
             elif phase == "copy":
-                cur_mb = current / (1024 * 1024)
-                tot_mb = total / (1024 * 1024)
-                self._progress_label.setText(f"Transferring Archive ({cur_mb:.1f} MB / {tot_mb:.1f} MB)")
-            elif phase == "hashing":
-                self._progress_label.setText(f"Verifying SHA-256 Checksum ({pct}%)")
+                self._progress_label.setText(f"Transferring Archive ({pct}% · {_fmt_size(current)} / {_fmt_size(total)})")
+            elif phase == "verify_source":
+                self._progress_label.setText(f"Verifying Source SHA-256 ({pct}% · {_fmt_size(current)} / {_fmt_size(total)})")
+            elif phase == "verify_destination":
+                self._progress_label.setText(f"Verifying Destination SHA-256 ({pct}% · {_fmt_size(current)} / {_fmt_size(total)})")
+            elif phase in ("hashing", "verifying"):
+                self._progress_label.setText(f"Verifying SHA-256 Checksum ({pct}% · {_fmt_size(current)} / {_fmt_size(total)})")
             else:
                 self._progress_label.setText(f"Processing ({phase})...")
 

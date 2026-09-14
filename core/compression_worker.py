@@ -13,7 +13,7 @@ import os
 import sys
 
 
-CHUNK_SIZE = 1024 * 1024 * 4  # 4 MB chunks
+CHUNK_SIZE = 1024 * 1024 * 8  # 8 MB chunks for high-speed multi-gigabyte throughput
 
 
 def _stream_write_file(zf, src_path: str, arcname: str, on_bytes) -> None:
@@ -23,12 +23,12 @@ def _stream_write_file(zf, src_path: str, arcname: str, on_bytes) -> None:
         fsize = 0
 
     if fsize == 0:
-        with zf.open(arcname, "w") as dest_f:
+        with zf.open(arcname, "w", force_zip64=True) as dest_f:
             pass
         return
 
     with open(src_path, "rb") as src_f:
-        with zf.open(arcname, "w") as dest_f:
+        with zf.open(arcname, "w", force_zip64=True) as dest_f:
             while True:
                 chunk = src_f.read(CHUNK_SIZE)
                 if not chunk:
@@ -90,7 +90,7 @@ def compress_files(
             pass
 
     # If no password is set, standard zipfile with allowZip64=True guarantees
-    # seamless support for large datasets (> 4 GB, such as 7.8 GB folders)
+    # seamless support for large datasets (> 4 GB, such as 7.8 GB folders or 87+ GB files)
     # without 32-bit header overflow or Windows Explorer corruption.
     if not pwd:
         import zipfile
@@ -126,31 +126,35 @@ def compress_files(
                 on_progress(i + 1)
         return True
     except Exception as e:
-        sys.stderr.write(f"pyzipper warning: {e}, falling back to pyminizip\n")
+        sys.stderr.write(f"pyzipper warning: {e}, falling back to secondary engine\n")
 
-    try:
-        import pyminizip
-        pyminizip.compress_multiple(
-            norm_srcs,
-            norm_prefixes,
-            zip_path,
-            pwd,
-            compression_level,
-            on_progress,
-        )
-        return True
-    except Exception as e:
-        sys.stderr.write(f"pyminizip warning: {e}, falling back to zipfile\n")
-        import zipfile
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=compression_level, allowZip64=True) as zf:
-            for i, sp in enumerate(norm_srcs):
-                if not os.path.exists(sp):
-                    continue
-                prefix = norm_prefixes[i] if i < len(norm_prefixes) else ""
-                arcname = os.path.join(prefix, os.path.basename(sp)).replace("\\", "/") if prefix else os.path.basename(sp)
-                _stream_write_file(zf, sp, arcname, on_bytes_written)
-                on_progress(i + 1)
-        return True
+    # pyminizip has a hard 32-bit integer limit (max 2-4 GB). Skip it for huge files or archives >= 2 GB.
+    has_large_file = any(os.path.exists(p) and os.path.getsize(p) >= (2 * 1024 * 1024 * 1024) for p in norm_srcs)
+    if not has_large_file and total_bytes < (2 * 1024 * 1024 * 1024):
+        try:
+            import pyminizip
+            pyminizip.compress_multiple(
+                norm_srcs,
+                norm_prefixes,
+                zip_path,
+                pwd,
+                compression_level,
+                on_progress,
+            )
+            return True
+        except Exception as e:
+            sys.stderr.write(f"pyminizip warning: {e}, falling back to zipfile\n")
+
+    import zipfile
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=compression_level, allowZip64=True) as zf:
+        for i, sp in enumerate(norm_srcs):
+            if not os.path.exists(sp):
+                continue
+            prefix = norm_prefixes[i] if i < len(norm_prefixes) else ""
+            arcname = os.path.join(prefix, os.path.basename(sp)).replace("\\", "/") if prefix else os.path.basename(sp)
+            _stream_write_file(zf, sp, arcname, on_bytes_written)
+            on_progress(i + 1)
+    return True
 
 
 def main():

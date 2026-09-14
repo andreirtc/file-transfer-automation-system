@@ -60,9 +60,14 @@ class IntegrityVerifier:
 
         h = hashlib.new(self._algorithm)
 
+        # Use 8 MB chunks for files > 1 GB to accelerate large file hashing
+        chunk_size = self._chunk_size
+        if total_size > 1024 * 1024 * 1024 and chunk_size < 8 * 1024 * 1024:
+            chunk_size = 8 * 1024 * 1024
+
         with open(path, "rb") as f:
             while True:
-                chunk = f.read(self._chunk_size)
+                chunk = f.read(chunk_size)
                 if not chunk:
                     break
                 h.update(chunk)

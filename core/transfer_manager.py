@@ -86,7 +86,7 @@ class TransferWorker(QThread):
     """Background worker that executes batch compression and transfer for a single job."""
 
     transfer_started = Signal(str)                  # record_id
-    transfer_progress = Signal(str, str, int, int)  # record_id, phase, current, total
+    transfer_progress = Signal(str, str, "qint64", "qint64")  # record_id, phase, current (bytes), total (bytes)
     transfer_completed = Signal(str, object)        # record_id, TransferResult
     worker_event = Signal(str, str)                 # job_id, message
     all_done = Signal()
@@ -504,7 +504,7 @@ class JobController(QObject):
     file_detected = Signal(str, str, object)          # job_id, file_path, TransferRecord
     files_detected = Signal(str, list)                # job_id, list[TransferRecord]
     file_status_changed = Signal(str, str, object)    # job_id, record_id, FileStatus
-    transfer_progress = Signal(str, str, str, int, int)  # job_id, record_id, phase, current, total
+    transfer_progress = Signal(str, str, str, "qint64", "qint64")  # job_id, record_id, phase, current (bytes), total (bytes)
     transfer_completed = Signal(str, str, object)     # job_id, record_id, TransferResult
     stats_updated = Signal(str, dict)                 # job_id, {status: count}
     monitoring_changed = Signal(str, bool)            # job_id, is_monitoring
@@ -1169,7 +1169,7 @@ class TransferManager(QObject):
     file_detected = Signal(str, object)          # file_path, TransferRecord (for active workspace job)
     files_detected = Signal(list)                # list[TransferRecord] (for active workspace job)
     file_status_changed = Signal(str, object)    # record_id, FileStatus (for active workspace job)
-    transfer_progress = Signal(str, str, int, int)  # record_id, phase, current, total
+    transfer_progress = Signal(str, str, "qint64", "qint64")  # record_id, phase, current (bytes), total (bytes)
     transfer_completed = Signal(str, object)     # record_id, TransferResult (for active workspace job)
     stats_updated = Signal(dict)                 # {status: count} for active workspace job
     monitoring_changed = Signal(bool)            # is_monitoring for active workspace job
@@ -1179,7 +1179,7 @@ class TransferManager(QObject):
     # Multi-job live signals for Main Dashboard (emitted for all jobs in real-time)
     job_file_detected = Signal(str, str, object)       # job_id, file_path, TransferRecord
     job_file_status_changed = Signal(str, str, object) # job_id, record_id, FileStatus
-    job_transfer_progress = Signal(str, str, int, int) # job_id, phase, current, total
+    job_transfer_progress = Signal(str, str, "qint64", "qint64") # job_id, phase, current (bytes), total (bytes)
     job_transfer_completed = Signal(str, str, object)  # job_id, record_id, TransferResult
     job_stats_updated = Signal(str, dict)              # job_id, stats dict
     job_status_changed = Signal(str, str)              # job_id, execution_state

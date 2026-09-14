@@ -94,6 +94,7 @@ if __name__ == "__main__":
                 data["zip_path"],
                 data.get("password"),
                 data.get("compression_level", 4),
+                data.get("total_bytes", 0),
             )
             sys.exit(0)
         except Exception as e:

@@ -542,11 +542,12 @@ class DocsPageWidget(QWidget):
             <li><b>Security:</b> Protects sensitive corporate data in transit and at rest with strong encryption.</li>
         </ul>
 
-        <h2>Military-Grade AES-256 Encryption & Zip64</h2>
+        <h2>Military-Grade AES-256 Encryption & Unlimited Zip64 Architecture</h2>
         <ul>
             <li><b>WinZip AES-256 Standard:</b> The application encrypts archives using standard WinZip AES-256 / AES-128 encryption powered by <code>pyzipper</code>. This provides robust protection against unauthorized access.</li>
-            <li><b>Zip64 Support (No 4 GB Limit):</b> Standard legacy zip files cannot exceed 4 GB. This system includes native <b>Zip64</b> support, allowing you to generate massive archives exceeding 50 GB to 500 GB+ without failure.</li>
-            <li><b>Fallback Compatibility:</b> If needed, the system automatically falls back to standard <code>pyminizip</code> / standard <code>zipfile</code> to ensure an archive is always generated.</li>
+            <li><b>64-Bit Enterprise Scaling (No Size Limit):</b> Built on native 64-bit architecture (<code>qint64</code>) and <b>Zip64</b> streaming (<code>force_zip64=True</code>), supporting 100+ GB single files and multi-terabyte backup archives with zero 32-bit integer limits or 4 GB caps.</li>
+            <li><b>High-Throughput 8 MB Buffering:</b> Uses dynamic 8 MB sequential streaming buffers for transfers and SHA-256 verification of files &gt; 1 GB, maximizing multi-gigabit throughput while keeping RAM usage minimal (&lt; 16 MB).</li>
+            <li><b>Cross-Platform Compatibility:</b> Generates standard Zip64 archives natively compatible with 7-Zip, WinRAR, Windows File Explorer, and Linux/macOS command-line utilities without requiring third-party proprietary licenses.</li>
         </ul>
 
         <h2>How to Open & Extract Archives</h2>

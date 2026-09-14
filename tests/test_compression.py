@@ -1116,6 +1116,51 @@ def test_file_monitor_stop_non_blocking(tmp_path):
     assert monitor.is_running is False
 
 
+def test_signals_support_100gb_values(qapp):
+    """Verify PySide6 signals handle 87GB and 100+GB without 32-bit integer OverflowError."""
+    from core.transfer_manager import TransferWorker, JobController, TransferManager
+
+    worker = TransferWorker(1, None, None, None, None)
+    received = []
+    worker.transfer_progress.connect(lambda rid, ph, cur, tot: received.append((cur, tot)))
+
+    size_87gb = 87 * 1024 * 1024 * 1024
+    size_120gb = 120 * 1024 * 1024 * 1024
+
+    # This previously threw OverflowError: Value 93415538688 exceeds limits of type [signed] "int" (4bytes)
+    worker.transfer_progress.emit("rec-1", "copy", size_87gb, size_120gb)
+    assert len(received) == 1
+    assert received[0] == (size_87gb, size_120gb)
+
+
+def test_job_card_update_progress_100gb_format(qapp):
+    """Verify JobOverviewCard displays 100+ GB and verification phases cleanly in GB."""
+    from gui.main_dashboard import JobOverviewCard
+    from core.models import TransferJob
+
+    job = TransferJob(name="Massive 100GB Job", source_folder="C:/src", destination_folder="C:/dst")
+    card = JobOverviewCard(job)
+
+    cur_bytes = 45 * 1024 * 1024 * 1024
+    tot_bytes = 90 * 1024 * 1024 * 1024
+
+    # Test copy phase
+    card.update_progress("copy", cur_bytes, tot_bytes)
+    assert "45.00 GB / 90.00 GB" in card._progress_label.text()
+    assert card._progress_bar.value() == 50
+
+    # Test verify_source phase
+    card.update_progress("verify_source", cur_bytes, tot_bytes)
+    assert "Verifying Source SHA-256" in card._progress_label.text()
+    assert "45.00 GB / 90.00 GB" in card._progress_label.text()
+
+    # Test verify_destination phase
+    card.update_progress("verify_destination", tot_bytes, tot_bytes)
+    assert "Verifying Destination SHA-256" in card._progress_label.text()
+    assert "90.00 GB / 90.00 GB" in card._progress_label.text()
+
+
+
 
 
 
