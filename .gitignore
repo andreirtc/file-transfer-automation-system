@@ -26,6 +26,7 @@ demo/source/*
 demo/destination/*
 !demo/source/.gitkeep
 !demo/destination/.gitkeep
+demo_oracle_test/
 
 # IDE
 .idea/

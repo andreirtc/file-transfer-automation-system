@@ -115,8 +115,6 @@ class DatabaseService:
                     ON transfer_records(source_path);
                 CREATE INDEX IF NOT EXISTS idx_records_status
                     ON transfer_records(status);
-                CREATE INDEX IF NOT EXISTS idx_records_batch_date
-                    ON transfer_records(batch_date);
                 """
             )
             conn.commit()
@@ -144,6 +142,12 @@ class DatabaseService:
             except sqlite3.OperationalError:
                 pass
 
+            try:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_records_batch_date ON transfer_records(batch_date)")
+            except sqlite3.OperationalError:
+                pass
+
+            conn.commit()
             logger.info("Database schema initialized at %s", self._db_path)
         finally:
             conn.close()
