@@ -339,3 +339,45 @@ def test_report_data_multi_file_aggregation(config, test_db):
     assert "3 files verified" in r["remarks"]
 
 
+def test_normalize_name():
+    """Verify that normalize_name strips whitespace, hyphens, underscores, and uppercases."""
+    assert ReportService.normalize_name("GO CANVAS") == "GOCANVAS"
+    assert ReportService.normalize_name("go_canvas") == "GOCANVAS"
+    assert ReportService.normalize_name("go-canvas") == "GOCANVAS"
+    assert ReportService.normalize_name("GOCANVAS") == "GOCANVAS"
+    assert ReportService.normalize_name("  psr _ cse - backup  ") == "PSRCSEBACKUP"
+    assert ReportService.normalize_name("") == ""
+    assert ReportService.normalize_name(None) == ""
+
+
+def test_report_data_auto_matches_with_whitespace_and_separators(config, test_db):
+    """Verify that a job named 'GO CANVAS' or 'go_canvas' auto-matches checklist system 'GOCANVAS'."""
+    # Create job with spaces: 'GO CANVAS'
+    job = TransferJob(name="GO CANVAS", source_folder="/src/gocanvas", destination_folder="/dst/gocanvas")
+    test_db.save_job(job)
+
+    rec = TransferRecord(
+        job_id=job.id,
+        file_name="GOCANVAS_20260916.zip",
+        source_path="/src/gocanvas/GOCANVAS_20260916.zip",
+        destination_path="/dst/gocanvas/GOCANVAS_20260916.zip",
+        file_size=104_857_600,  # 100 MB
+        status=FileStatus.COMPLETED,
+        transfer_completed=datetime(2026, 9, 16, 9, 30, 0),
+        verification_passed=True,
+    )
+    test_db.save_record(rec)
+
+    # Row 6 in default checklist is 'GOCANVAS' with linked_job='' (Match by Name)
+    svc = ReportService(config, test_db)
+    data = svc.get_report_data(date(2026, 9, 16))
+    gocanvas_row = [r for r in data["table_rows"] if r["job_name"] == "GOCANVAS"][0]
+
+    assert gocanvas_row["verification_status"] == "Verified"
+    assert gocanvas_row["file_size"] == "100.0 MB"
+    assert gocanvas_row["completion_time"] == "09:30 AM"
+    assert gocanvas_row["integrity_check"] == "Passed"
+    assert gocanvas_row["remarks"] == "Completed successfully"
+
+
+

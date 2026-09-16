@@ -1,0 +1,139 @@
+================================================================================
+          FILE TRANSFER AUTOMATION SYSTEM — INSTALLATION & SETUP GUIDE
+================================================================================
+Version:        1.0.0 (64-Bit Enterprise Edition)
+Supported OS:   Windows 10, Windows 11, Windows Server 2016 / 2019 / 2022 / 2025
+Architecture:   x86_64 (64-Bit Architecture, Zip64 100+ GB Support)
+================================================================================
+
+1. SYSTEM OVERVIEW & ZERO-DEPENDENCY PORTABILITY
+--------------------------------------------------------------------------------
+The File Transfer Automation System is a standalone, portable Windows
+application. It contains all required runtimes, graphical frameworks (PySide6 /
+Fluent UI), compression tools (Zip64 / AES-256), cryptographic verification
+engines (SHA-256), and reporting libraries (openpyxl) self-contained.
+
+NO Python installation, external DLL installation, or administrative registry
+modifications are required.
+
+
+2. PACKAGE CONTENTS & DIRECTORY STRUCTURE
+--------------------------------------------------------------------------------
+Ensure the following directory structure is present in your installation folder:
+
+  FileTransferAutomationSystem/
+  │
+  ├── FileTransferAutomationSystem.exe     <- Main Application Executable
+  ├── INSTALLATION_GUIDE.txt              <- This installation guide
+  │
+  ├── config/
+  │   └── config.json                     <- Application settings & job definitions
+  │
+  ├── templates/
+  │   └── TFSPH_Daily_Backup_Checklist_Template.xlsx  <- Master Excel template
+  │
+  ├── reports/                            <- Generated daily checklist reports (.xlsx)
+  │
+  ├── database/
+  │   └── transfer_history.db             <- SQLite persistent tracking & audit database
+  │
+  ├── logs/                               <- Automated rotating application logs
+  │   ├── application.log                 <- Application lifecycle events
+  │   ├── transfer.log                    <- Real-time file transfer operations
+  │   └── error.log                       <- Warnings and failure diagnostics
+  │
+  ├── assets/                             <- Application icons and graphics
+  │
+  └── _internal/                          <- Bundled 64-bit runtime libraries
+
+
+3. STEP-BY-STEP INSTALLATION & DEPLOYMENT
+--------------------------------------------------------------------------------
+STEP 1: PLACE THE APPLICATION FOLDER
+  Copy the entire "FileTransferAutomationSystem" folder to your chosen location
+  on the target workstation or server.
+  Recommended locations:
+    - Workstation:  C:\FileTransferAutomationSystem
+    - Server:       D:\Apps\FileTransferAutomationSystem
+    - Program Dir:  C:\Program Files\FileTransferAutomationSystem
+
+STEP 2: PERMISSIONS & SECURITY
+  Ensure the Windows user account executing the application has:
+    a) Read/Write/Modify permissions to the FileTransferAutomationSystem folder
+       (specifically for database, logs, and reports directories).
+    b) Read access to all configured Source backup directories / network shares.
+    c) Read/Write/Create access to all Destination backup directories / shares.
+
+STEP 3: RUN THE APPLICATION
+  Double-click "FileTransferAutomationSystem.exe".
+  The system will launch the Fluent UI desktop interface, verify connectivity,
+  and initialize SQLite database tracking.
+
+STEP 4: (OPTIONAL) CREATE A DESKTOP SHORTCUT
+  1. Right-click "FileTransferAutomationSystem.exe".
+  2. Select "Show more options" (Windows 11) -> "Send to" -> "Desktop (create shortcut)".
+  3. Rename the shortcut to "File Transfer Automation System".
+
+STEP 5: (OPTIONAL) CONFIGURE AUTO-START ON WINDOWS BOOT
+  To keep the application continuously monitoring scheduled transfers after
+  server reboots:
+  Method A: Windows Startup Folder
+    1. Press Win + R, type "shell:startup", and press Enter.
+    2. Paste a shortcut to "FileTransferAutomationSystem.exe" into the folder.
+  Method B: Windows Task Scheduler
+    1. Open Task Scheduler (taskschd.msc).
+    2. Create a basic task triggered "At log on" or "At startup".
+    3. Action: "Start a program" -> Browse to "FileTransferAutomationSystem.exe".
+    4. Crucial: In "Start in (optional)", enter the folder path containing the exe
+       (e.g., C:\FileTransferAutomationSystem).
+
+
+4. NETWORK SHARE & UNC PATH BEST PRACTICES
+--------------------------------------------------------------------------------
+* When transferring across local networks, using UNC paths is strongly
+  recommended instead of mapped drive letters (e.g., use
+  \\192.168.80.70\c$\Backup\Source instead of Z:\Source).
+* Windows mapped network drive letters (like Z:) are bound to specific login
+  sessions and can disconnect upon inactivity; UNC paths remain consistently
+  routable.
+* Under Settings -> General Settings:
+  - "Network Drive Mode": Enable this if your source or destination is a NAS
+    or remote Windows share. This optimizes polling frequency and reconnection
+    intervals.
+
+
+5. DAILY REPORT & CHECKLIST CONFIGURATION
+--------------------------------------------------------------------------------
+1. Navigate to the "Daily Report" tab in the left sidebar.
+2. Click "Configure Systems" to customize your monitored systems (TFS42PROD,
+   CSE, TFA, COGNOS, SAP, GOCANVAS, DPPS, QMS, etc.).
+3. AUTO-MATCHING & LINKED JOBS:
+   - Name Normalization: Job names are automatically matched case-insensitively,
+     ignoring spaces, underscores, and hyphens (e.g., "GO CANVAS", "go_canvas",
+     and "gocanvas" all match "GOCANVAS").
+   - Dropdown Link: For guaranteed 100% typo-proof mapping, use the "Linked Job"
+     dropdown in each row to link directly by Job ID.
+4. Auto-Generation: Reports generate automatically at the conclusion of each
+   transfer window, or can be generated on demand via "Generate Daily Report (.xlsx)".
+
+
+6. HOW TO UPGRADE FUTURE RELEASES (DATA PRESERVATION)
+--------------------------------------------------------------------------------
+When deploying a newer version of the application:
+1. Close the running application.
+2. Copy over the new executable and `_internal/` directory.
+3. PRESERVE your existing data:
+   - DO NOT overwrite `database/transfer_history.db` (contains all historical records).
+   - DO NOT overwrite `config/config.json` (contains your customized jobs and settings).
+   - DO NOT overwrite `reports/` (contains past generated checklist workbooks).
+
+
+7. TROUBLESHOOTING & LOGS
+--------------------------------------------------------------------------------
+If you encounter any operational issues:
+* Check the Logs:
+  Open `logs/application.log` or `logs/error.log` in Notepad for full diagnostic traces.
+* Click "View Logs" in the application's bottom sidebar for live real-time logs.
+* Refer to the built-in "Documentation & IT Guide" tab inside the app for
+  exhaustive step-by-step resolution guides for 12 common enterprise scenarios.
+================================================================================

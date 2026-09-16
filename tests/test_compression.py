@@ -1217,6 +1217,64 @@ def test_batch_compression_uses_checklist_pattern_filename(tmp_source_dir, tmp_d
     assert zip_path.name.endswith(".zip")
 
 
+def test_batch_compression_uses_checklist_pattern_with_normalized_name(tmp_source_dir, tmp_dest_dir, test_db, config):
+    """Verify that batch compression names the zip matching checklist pattern even with space/separator differences (e.g. 'GO CANVAS' vs 'GOCANVAS')."""
+    from datetime import datetime
+
+    config.set("batch_compression_enabled", True)
+    config.set("zip_password", "")
+    config.set("checklist_systems", [
+        {
+            "no": 6,
+            "job_name": "GOCANVAS",
+            "linked_job": "(Match by Name)",
+            "pattern": "GOCANVAS_BACKUP_<YYYYMMDD>",
+            "file_type": "RAR",
+            "description": "GoCanvas Backup",
+            "expected_location": ""
+        }
+    ])
+
+    job = TransferJob(
+        name="GO CANVAS",
+        source_folder=str(tmp_source_dir),
+        destination_folder=str(tmp_dest_dir),
+        schedule_mode="window",
+    )
+    test_db.save_job(job)
+
+    src = tmp_source_dir / "sample_gocanvas.txt"
+    src.write_text("GoCanvas payload data")
+
+    record = TransferRecord(
+        job_id=job.id,
+        file_name=src.name,
+        source_path=str(src),
+        destination_path=str(tmp_dest_dir / src.name),
+        file_size=src.stat().st_size,
+        source_modified=src.stat().st_mtime,
+        status=FileStatus.READY,
+        override_window=True,
+    )
+    test_db.save_record(record)
+
+    manager = TransferManager(config, test_db)
+    manager.set_job(job)
+    manager._active_records[record.source_path] = record
+
+    manager.transfer_ready_files()
+    if manager._worker:
+        manager._worker.wait(10000)
+
+    assert record.status == FileStatus.COMPLETED
+    expected_pattern_stem = f"GOCANVAS_BACKUP_{datetime.now().strftime('%Y%m%d')}"
+    zip_path = Path(record.destination_path)
+    assert zip_path.exists()
+    assert expected_pattern_stem in zip_path.name
+    assert zip_path.name.endswith(".zip")
+
+
+
 
 
 

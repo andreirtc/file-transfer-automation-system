@@ -12,6 +12,7 @@ from __future__ import annotations
 import getpass
 import logging
 import os
+import re
 import shutil
 import sys
 from copy import copy
@@ -39,6 +40,17 @@ class ReportService:
     """
     Automates generation of the TFSPH Daily Backup Checklist Excel report.
     """
+
+    @staticmethod
+    def normalize_name(s: str) -> str:
+        """
+        Normalize a job or system name by removing spaces, underscores, hyphens,
+        and converting to uppercase for flexible, typo-resistant auto-matching.
+        Example: 'GO CANVAS', 'go_canvas', 'go-canvas' -> 'GOCANVAS'
+        """
+        if not s:
+            return ""
+        return re.sub(r"[\s_\-]+", "", str(s)).upper()
 
     def __init__(self, config: ConfigurationService, db: DatabaseService):
         self._config = config
@@ -106,6 +118,11 @@ class ReportService:
         records = self._db.get_records_by_date(dt_obj)
         jobs = {j.id: j for j in self._db.get_jobs()}
         jobs_by_name = {j.name.upper(): j for j in jobs.values()}
+        jobs_by_norm = {
+            self.normalize_name(j.name): j
+            for j in jobs.values()
+            if self.normalize_name(j.name)
+        }
 
         systems = self._config.checklist_systems
         table_rows: list[dict[str, Any]] = []
@@ -117,6 +134,7 @@ class ReportService:
             job_name = sys_item.get("job_name", f"System {idx}")
             linked_job = sys_item.get("linked_job", "").strip()
             job_name_upper = job_name.upper()
+            job_name_norm = self.normalize_name(job_name)
             configured_pattern = sys_item.get("pattern", f"{job_name}_<YYYYMMDD>")
             file_type = sys_item.get("file_type", "FILE")
             description = sys_item.get("description", "")
@@ -125,9 +143,13 @@ class ReportService:
             # Look up associated TransferJob (by explicit linked_job or job_name)
             associated_job = None
             if linked_job and linked_job.upper() not in ("(MATCH BY NAME)", "(NONE)", "AUTO"):
-                associated_job = jobs_by_name.get(linked_job.upper()) or jobs.get(linked_job)
+                associated_job = (
+                    jobs_by_name.get(linked_job.upper())
+                    or jobs_by_norm.get(self.normalize_name(linked_job))
+                    or jobs.get(linked_job)
+                )
             if not associated_job:
-                associated_job = jobs_by_name.get(job_name_upper)
+                associated_job = jobs_by_name.get(job_name_upper) or jobs_by_norm.get(job_name_norm)
 
             if not expected_location and associated_job and associated_job.destination_folder:
                 expected_location = associated_job.destination_folder
@@ -138,17 +160,22 @@ class ReportService:
 
             for rec in records:
                 is_match = False
+                rec_fn_upper = rec.file_name.upper()
+                rec_fn_norm = self.normalize_name(rec.file_name)
                 # Direct match by associated job id
                 if associated_job and rec.job_id == associated_job.id:
                     is_match = True
-                # Match by filename containing job_name
-                elif job_name_upper in rec.file_name.upper():
+                # Match by filename containing job_name (exact or normalized)
+                elif job_name_upper in rec_fn_upper or (job_name_norm and len(job_name_norm) >= 2 and job_name_norm in rec_fn_norm):
                     is_match = True
                 # Match by filename containing linked_job
                 elif (
                     linked_job
                     and linked_job.upper() not in ("(MATCH BY NAME)", "(NONE)", "AUTO")
-                    and linked_job.upper() in rec.file_name.upper()
+                    and (
+                        linked_job.upper() in rec_fn_upper
+                        or (self.normalize_name(linked_job) and len(self.normalize_name(linked_job)) >= 2 and self.normalize_name(linked_job) in rec_fn_norm)
+                    )
                 ):
                     is_match = True
 

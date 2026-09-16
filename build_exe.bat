@@ -20,6 +20,7 @@ if not exist "dist\FileTransferAutomationSystem\assets" mkdir "dist\FileTransfer
 copy /y "templates\*.*" "dist\FileTransferAutomationSystem\templates\" >nul 2>&1
 copy /y "config\*.*" "dist\FileTransferAutomationSystem\config\" >nul 2>&1
 copy /y "assets\*.*" "dist\FileTransferAutomationSystem\assets\" >nul 2>&1
+if exist "INSTALLATION_GUIDE.txt" copy /y "INSTALLATION_GUIDE.txt" "dist\FileTransferAutomationSystem\" >nul 2>&1
 
 echo.
 echo ========================================================

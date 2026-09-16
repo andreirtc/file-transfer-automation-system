@@ -194,14 +194,19 @@ class TransferWorker(QThread):
                 job_name_upper = job.name.upper()
                 checklist_systems = getattr(self._config, "checklist_systems", [])
                 if isinstance(checklist_systems, list):
+                    from services.report_service import ReportService
+                    norm_job_name = ReportService.normalize_name(job.name)
                     for sys_cfg in checklist_systems:
                         if not isinstance(sys_cfg, dict):
                             continue
                         cfg_job_name = str(sys_cfg.get("job_name", "")).strip().upper()
                         cfg_linked_job = str(sys_cfg.get("linked_job", "")).strip().upper()
+                        norm_cfg_name = ReportService.normalize_name(cfg_job_name)
+                        norm_cfg_linked = ReportService.normalize_name(cfg_linked_job)
                         if (
                             cfg_job_name == job_name_upper
-                            or (cfg_linked_job and cfg_linked_job not in ("(MATCH BY NAME)", "(NONE)", "AUTO") and cfg_linked_job == job_name_upper)
+                            or (norm_cfg_name and norm_cfg_name == norm_job_name)
+                            or (cfg_linked_job and cfg_linked_job not in ("(MATCH BY NAME)", "(NONE)", "AUTO") and (cfg_linked_job == job_name_upper or norm_cfg_linked == norm_job_name))
                             or (cfg_linked_job and cfg_linked_job == job.id.upper())
                         ):
                             pat = sys_cfg.get("pattern")
