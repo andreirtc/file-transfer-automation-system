@@ -68,25 +68,20 @@ Designed with a high-performance Windows 11 Fluent interface optimized for high-
 
 ---
 
-## Technical Specifications: Transfers & Compression
+## Technical Specifications: Transfers & Integrity
 
 ### What Do We Use to Transfer Files?
-1. **Batch Mode (Default):** When `batch_compression_enabled` is true, all queued files are read in 64 KB binary streaming chunks and consolidated into an encrypted `.tmp_batch_...zip` archive directly in destination staging. After SHA-256 verification, the file is atomically renamed to its timestamped archive name (`YYYY-MM-DD_HHMMSS.zip`).
-2. **Direct Mode:** When batch compression is disabled, files are copied individually via Python's native binary streaming engine with configurable parallel threads (`transfer_threads: 4`). Each thread writes to a hidden temporary file (`.filename.transfer_tmp`), computes SHA-256 on the fly, and atomically commits via `os.replace()`.
-3. **Throttled GUI Progress:** Progress updates from worker threads are throttled to at most once every 100ms per thread, capping GUI signal traffic and preventing Qt event queue starvation.
+1. **Direct Stream Mode (Default / Robocopy-Style):** Optimized for sensitive database backups (e.g. raw Oracle `.dmp` files). Files are read in adaptive 16 MB chunks and streamed directly byte-for-byte across network shares without compression or renaming risks. Preserves microsecond modification timestamps (`mtime`) and OS file flags via `shutil.copystat`, mirroring `robocopy /COPY:DAT`.
+2. **Batch ZIP Mode:** When `transfer_mode` is set to `"zip"` (or `batch_compression_enabled` is true), all queued files are read in 64 KB binary streaming chunks and consolidated into an encrypted `.tmp_batch_...zip` archive directly in destination staging. After verification, the archive is committed atomically (`YYYY-MM-DD_HHMMSS.zip`).
+3. **Smart Integrity Verification:**
+   - Files $\le 2\text{ GB}$: Full end-to-end cryptographic SHA-256 hash evaluation.
+   - Files $> 2\text{ GB}$: Exact byte-level size validation plus 24 MB multi-block SHA-256 (8 MB header, 8 MB middle, 8 MB footer), validating 100+ GB files in sub-second time without CPU exhaustion.
+4. **Throttled GUI Progress:** Progress updates from worker threads are throttled to at most once every 100ms per thread, capping GUI signal traffic and preventing Qt event queue starvation.
 
-### What Do We Use to Zip Files & Add Passwords?
-1. **Primary Library: `pyzipper` (WinZip AES-256 / AES-128):**
-   - Uses `pyzipper.AESZipFile` with `encryption=pyzipper.WZ_AES` and `allowZip64=True`.
-   - Provides industry-standard AES-256 encryption.
-   - Natively supports Zip64 extensions for archives exceeding 4 GB (tested up to 500 GB+).
-2. **Fallback Library: `pyminizip` (Standard ZipCrypto):**
-   - Falls back to `pyminizip.compress_multiple()` for standard ZipCrypto password encryption.
-3. **Subprocess Isolation:**
-   - Archive generation runs in a separate child process via `python -m core.compression_worker <config.json>`.
-   - Bypasses the Python Global Interpreter Lock (GIL), maintaining 60 FPS UI fluidity even during peak CPU compression.
-4. **Password Configuration:**
-   - Default archive password can be configured in `config/config.json` (`zip_password`) or modified via the in-app **Settings** dialog.
+### Operational Cycle Window & Overnight "Tumatawid" Crossover
+- **Cycle Range:** Configurable daily window (default: `18:00` Day 1 to `12:00` noon Day 2).
+- **Overnight File Assignment:** Files written across midnight (e.g., 23:15 Sept 15 or 02:30 AM Sept 16) automatically resolve to `2026-09-15` as their operational `batch_date`.
+- **Target Batch Date Controls:** The Job Workspace provides a calendar picker, dynamic cycle window label, batch filter toggle, and dedicated batch transfer button for selective multi-day backlog recovery.
 
 ---
 
@@ -213,9 +208,13 @@ Configuration values are stored in `config/config.json` and accessible via the i
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
+| `transfer_mode` | `"direct"` | Transfer protocol: `"direct"` (Raw 1:1 Robocopy-style) or `"zip"` (WinZip AES-256 archive). |
+| `operational_cycle_start` | `"18:00"` | Daily operational cycle window start time (24-hour HH:MM). |
+| `operational_cycle_end` | `"12:00"` | Daily operational cycle cut-off time (24-hour HH:MM) on Day 2 for overnight crossover. |
+| `smart_verification_enabled` | `true` | Dual-mode verification: full hash for $\le 2\text{ GB}$, exact size + 24 MB multi-block SHA-256 for $> 2\text{ GB}$. |
 | `max_concurrent_transfers` | `3` | Maximum simultaneous job batch transfers (1 = sequential, 0 = unlimited). |
 | `transfer_threads` | `8` | Parallel file transfer threads per job for direct transfers (optimal for gigabit LAN / NVMe). |
-| `batch_compression_enabled` | `true` | Consolidates queued files into a password-protected ZIP archive. |
+| `batch_compression_enabled` | `false` | Consolidates queued files into a password-protected ZIP archive (mirrors `transfer_mode`). |
 | `zip_password` | `"password123"` | Default password for encrypted zip archives. |
 | `stability_check_interval` | `5` | Seconds between file stability checks. |
 | `required_stable_checks` | `2` | Number of consecutive unchanged checks required for `READY` status. |

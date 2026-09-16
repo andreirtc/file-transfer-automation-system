@@ -138,7 +138,7 @@ STEP 5: (OPTIONAL) CONFIGURE AUTO-START ON WINDOWS BOOT
    transfer window, or can be generated on demand via "Generate Daily Report (.xlsx)".
 
 
-6. HOW TO UPGRADE FUTURE RELEASES (DATA PRESERVATION)
+7. HOW TO UPGRADE FUTURE RELEASES (DATA PRESERVATION)
 --------------------------------------------------------------------------------
 When deploying a newer version of the application:
 1. Close the running application.
@@ -149,7 +149,7 @@ When deploying a newer version of the application:
    - DO NOT overwrite `reports/` (contains past generated checklist workbooks).
 
 
-7. TROUBLESHOOTING & LOGS
+8. TROUBLESHOOTING & LOGS
 --------------------------------------------------------------------------------
 If you encounter any operational issues:
 * Check the Logs:

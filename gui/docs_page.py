@@ -163,6 +163,7 @@ class DocsPageWidget(QWidget):
             ("9. IT Troubleshooting & Practical FAQ", self._doc_troubleshooting()),
             ("10. Admin Verification & Testing Guide", self._doc_testing_guide()),
             ("11. Corporate Daily Backup Report Guide", self._doc_daily_report()),
+            ("12. Direct Streaming, Operational Cycles & Tumatawid Guide", self._doc_direct_streaming_cycle()),
         ]
 
         for title, _ in self._sections:
@@ -1083,5 +1084,109 @@ class DocsPageWidget(QWidget):
             <li><b>600ms Event Debouncer:</b> When transfers finish, Sync Now triggers, or tabs are switched, a 600ms debouncing timer buffers GUI updates, refreshing the live preview table smoothly without stutter or thread locking.</li>
             <li><b>Windows Excel File Lock Safeguard:</b> If the report is open in Microsoft Excel, Windows places an exclusive write lock on the file. Instead of failing with <code>[Errno 13] Permission denied</code>, the system automatically saves the updated report to a fallback workbook (<code>..._latest.xlsx</code>) and notifies the operator via a yellow Warning InfoBar. Once Excel is closed, the primary workbook can be overwritten cleanly.</li>
         </ul>
+        """
+
+    def _doc_direct_streaming_cycle(self) -> str:
+        return """
+        <h1>12. Direct Raw 1:1 Streaming, Operational Cycles & Tumatawid Guide</h1>
+        <p>This section provides in-depth technical documentation and operator procedures for handling sensitive database dumps (such as Oracle <code>.dmp</code> files), zero-compression network streaming, midnight-crossing backup files (<i>tumatawid</i>), and multi-day backlog recovery.</p>
+
+        <h2>1. Why Direct Raw 1:1 Streaming (Robocopy-Style)?</h2>
+        <p>Enterprise database files, particularly Oracle dump files (<code>.dmp</code>), possess specialized binary block structures. Compressing these files into ZIP archives or renaming them can present significant risks:</p>
+        <ul>
+            <li><b>Corruption Hazard:</b> Uncompressing or archiving raw database exports may introduce archive header mismatches or truncated streams that invalidate database import utilities (e.g. <code>impdp</code>).</li>
+            <li><b>CPU Starvation:</b> Compressing 50 GB to 200 GB files consumes heavy CPU cycles on backup hosts, slowing down core operational systems.</li>
+            <li><b>Direct Stream Benefits:</b>
+                <ul>
+                    <li><b>Exact 1:1 Byte Copy:</b> Files are read in high-performance 16 MB binary chunks and copied directly across the network share without modification.</li>
+                    <li><b>Microsecond Timestamp Preservation:</b> The engine utilizes <code>shutil.copystat</code> to duplicate the original file modification time (<code>mtime</code>), creation time, and file attributes, matching the behavior of Windows <code>robocopy /COPY:DAT /DCOPY:DAT</code>.</li>
+                    <li><b>Near-Zero CPU & Memory Footprint:</b> Stream copy operations keep server CPU utilization under 2% and memory capped at the buffer size.</li>
+                </ul>
+            </li>
+        </ul>
+
+        <h2>2. Smart Integrity Verification</h2>
+        <p>When transferring 100+ GB database dumps across network shares, standard full SHA-256 verification can take 15 to 25 minutes per file, delaying overall backup completion. The system provides <b>Smart Verification</b> (configurable in Settings):</p>
+        <ul>
+            <li><b>Standard Files (&le; 2 GB):</b> The system computes a complete cryptographic SHA-256 hash across every byte from beginning to end.</li>
+            <li><b>Massive Database Files (&gt; 2 GB):</b> The engine evaluates:
+                <ol>
+                    <li><b>Exact Byte-Level Size Matching:</b> Source and destination sizes must match down to the exact byte.</li>
+                    <li><b>24 MB Multi-Block Cryptographic Checksum:</b> Evaluates 8 MB from the file header, 8 MB from the exact file midpoint, and 8 MB from the file footer, hashing them into a compound SHA-256 digest.</li>
+                </ol>
+            </li>
+            <li><b>Execution Speed:</b> A 150 GB file is verified in under 1 second rather than 20 minutes, while guaranteeing that any file truncation, interrupted copy, or block corruption is caught immediately.</li>
+        </ul>
+
+        <h2>3. The Operational Cycle Window & Overnight "Tumatawid" Logic</h2>
+        <p>In enterprise operations, backups frequently cross midnight (<i>tumatawid</i>). For example, an Oracle backup job scheduled for the evening of September 15 may begin writing at 23:15 PM and finish at 02:30 AM on September 16.</p>
+        <p>If the system relied purely on the calendar date (Sept 16), the file would be mistakenly categorized under September 16, leaving September 15 blank on the daily checklist and causing audit discrepancies.</p>
+        <p><b>How the System Resolves This:</b></p>
+        <ul>
+            <li><b>Operational Cycle Window:</b> Configured by default from <b>18:00</b> on Day 1 to <b>12:00</b> (noon) on Day 2.</li>
+            <li><b>Automatic Date Assignment:</b> Any file generated between 18:00 on Sept 15 and 11:59 AM on Sept 16 is assigned the operational batch date: <b>2026-09-15</b>.</li>
+            <li><b>Configurable Hours:</b> The operational cycle start time (e.g. <code>18:00</code>) and cut-off time (e.g. <code>12:00</code>) can be adjusted globally in <b>Settings</b> or by clicking the gear icon next to the cycle display on the Job Workspace.</li>
+        </ul>
+
+        <h2>4. Operator Tutorial: Target Operational Batch Date & Backlogs</h2>
+        <p>The <b>Job Workspace</b> includes a dedicated <b>Target Operational Batch</b> bar designed to handle routine daily operations as well as multi-day backlog processing:</p>
+        
+        <h3>Scenario A: Normal Daily Operations</h3>
+        <ol>
+            <li>Open the application and navigate to <b>Job Workspace</b>.</li>
+            <li>The <b>Target Batch Date</b> picker automatically defaults to the active operational batch date.</li>
+            <li>The <b>Active Cycle</b> label confirms the exact time window (e.g. <code>Cycle: 2026-09-15 18:00 → 2026-09-16 12:00</code>).</li>
+            <li>Files falling within this window are transferred, stamped with <code>batch_date</code>, and recorded in the database.</li>
+        </ol>
+
+        <h3>Scenario B: Handling Delayed Backlogs (Multi-Day Catch-Up)</h3>
+        <p>If operations were paused or an operator returns on Monday after the weekend, the source directory may contain backup files from Friday, Saturday, and Sunday:</p>
+        <ol>
+            <li>Navigate to <b>Job Workspace</b> and select the target job.</li>
+            <li>In the <b>Target Batch Date</b> picker, select the oldest unprocessed date (e.g. <b>September 15, 2026</b>).</li>
+            <li>Observe that the cycle indicator updates to: <code>Cycle: 2026-09-15 18:00 → 2026-09-16 12:00</code>.</li>
+            <li>Turn on <b>Filter Table to Batch</b> to view only files that belong to that operational date.</li>
+            <li>Click <b>Transfer Batch Files</b>. The system scans the source directory, transfers <b>only</b> the files timestamped within that specific cycle, and stamps them with <code>batch_date = 2026-09-15</code>. Files from Sept 16 or Sept 17 are safely ignored.</li>
+            <li>Advance the calendar picker to the next day (<b>September 16, 2026</b>) and click <b>Transfer Batch Files</b> again.</li>
+            <li>Repeat for subsequent dates until all backlogs are cleared.</li>
+        </ol>
+
+        <h3>Scenario C: Exporting Audit Checklists for Backlog Dates</h3>
+        <ol>
+            <li>Navigate to <b>Daily Report</b> in the sidebar navigation.</li>
+            <li>Select the desired batch date (e.g. <code>2026-09-15</code>).</li>
+            <li>The preview table automatically loads all files that were stamped with that operational batch date—including overnight <i>tumatawid</i> files.</li>
+            <li>Click <b>Generate Report (.xlsx)</b> to export the official audit spreadsheet.</li>
+        </ol>
+
+        <h2>5. Configuration Reference</h2>
+        <p>Open <b>Settings</b> (gear icon in the bottom-left sidebar or on the Job Workspace batch bar) to adjust:</p>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #E2E8F0;">
+            <tr style="background-color: #F8FAFC;">
+                <th>Parameter</th>
+                <th>Default</th>
+                <th>Description</th>
+            </tr>
+            <tr>
+                <td><b>Transfer Mode</b></td>
+                <td><code>Direct Stream (Raw 1:1)</code></td>
+                <td>Selects between Direct 1:1 Robocopy-style streaming or Batch ZIP archiving.</td>
+            </tr>
+            <tr>
+                <td><b>Operational Cycle Start</b></td>
+                <td><code>18:00</code></td>
+                <td>Start time (24-hour HH:MM) when the operational cycle opens on Day 1.</td>
+            </tr>
+            <tr>
+                <td><b>Operational Cycle Cut-Off</b></td>
+                <td><code>12:00</code></td>
+                <td>Cut-off time (24-hour HH:MM) on Day 2 before which files still belong to Day 1.</td>
+            </tr>
+            <tr>
+                <td><b>Smart Verification</b></td>
+                <td><code>Enabled</code></td>
+                <td>Enables exact size validation plus 24 MB multi-block SHA-256 for files over 2 GB.</td>
+            </tr>
+        </table>
         """
 

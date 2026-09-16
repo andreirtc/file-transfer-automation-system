@@ -208,6 +208,7 @@ class MainWindow(MSFluentWindow):
         self._dashboard.stop_monitoring_requested.connect(self._on_stop_monitoring)
         self._dashboard.sync_now_requested.connect(self._on_sync_now)
         self._dashboard.sync_batch_requested.connect(self._on_sync_batch_date)
+        self._dashboard.configure_cycle_requested.connect(self._on_settings)
         self._dashboard.force_start_requested.connect(self._manager.force_start)
         self._dashboard.job_switched.connect(self._on_job_switched)
         self._dashboard.delete_job_requested.connect(self._on_delete_job)
@@ -575,7 +576,9 @@ class MainWindow(MSFluentWindow):
 
     def _on_settings(self):
         dialog = SettingsDialog(self._config, self)
-        dialog.exec()
+        if dialog.exec():
+            if hasattr(self, "_dashboard") and hasattr(self._dashboard, "_update_cycle_label"):
+                self._dashboard._update_cycle_label()
 
     def _on_view_logs(self):
         dialog = LogViewerDialog(self)

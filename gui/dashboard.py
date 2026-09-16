@@ -89,6 +89,7 @@ class DashboardWidget(QWidget):
     force_start_requested = Signal(str)
     job_switched = Signal(str) # job id
     delete_job_requested = Signal(str) # job id
+    configure_cycle_requested = Signal()
 
     def __init__(self, config: Optional[ConfigurationService] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -182,6 +183,11 @@ class DashboardWidget(QWidget):
         self._cycle_label = BodyLabel("", self._batch_card)
         self._cycle_label.setStyleSheet("color: #0078D4; font-weight: 500;")
         batch_layout.addWidget(self._cycle_label)
+
+        self._btn_cycle_settings = ToolButton(FluentIcon.SETTING, self._batch_card)
+        self._btn_cycle_settings.setToolTip("Configure Operational Cycle Hours (Settings)")
+        self._btn_cycle_settings.clicked.connect(self.configure_cycle_requested.emit)
+        batch_layout.addWidget(self._btn_cycle_settings)
 
         batch_layout.addStretch(1)
 
