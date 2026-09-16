@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QWidget,
-    QTableWidgetItem
+    QTableWidgetItem,
+    QFrame
 )
 
 from qfluentwidgets import (
@@ -30,15 +31,16 @@ from qfluentwidgets import (
     PrimaryPushButton,
     SubtitleLabel,
     BodyLabel,
+    StrongBodyLabel,
     SpinBox,
     ComboBox,
     TableWidget,
     PlainTextEdit,
     SimpleCardWidget,
-    SimpleCardWidget,
     SwitchButton,
     LineEdit,
-    PasswordLineEdit
+    PasswordLineEdit,
+    ScrollArea
 )
 
 from core.models import ConflictResolution, FileStatus, SyncAction, TransferRecord
@@ -272,132 +274,85 @@ class SettingsDialog(MessageBoxBase):
 
         self.titleLabel = SubtitleLabel("Settings", self)
         self.viewLayout.addWidget(self.titleLabel)
-        self.viewLayout.addSpacing(16)
+        self.viewLayout.addSpacing(6)
         
-        self.widget.setMinimumWidth(450)
+        self.widget.setMinimumWidth(640)
+        self.widget.setMaximumWidth(700)
 
-        form = QFormLayout()
+        # Scroll container to prevent vertical squishing
+        scroll = ScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.enableTransparentBackground()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("border: none; background: transparent;")
+        scroll.setMinimumHeight(460)
+        scroll.setMaximumHeight(540)
 
-        # Stability check interval
-        self._stability_interval = SpinBox(self)
-        self._stability_interval.setRange(1, 120)
-        self._stability_interval.setValue(config.stability_check_interval)
-        form.addRow(BodyLabel("Stability check interval (sec):", self), self._stability_interval)
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        content_layout = QVBoxLayout(container)
+        content_layout.setContentsMargins(4, 4, 16, 4)
+        content_layout.setSpacing(14)
 
-        # Required stable checks
-        self._stable_checks = SpinBox(self)
-        self._stable_checks.setRange(1, 20)
-        self._stable_checks.setValue(config.required_stable_checks)
-        form.addRow(BodyLabel("Required stable checks:", self), self._stable_checks)
+        def make_section(title_text: str) -> QFormLayout:
+            hdr = StrongBodyLabel(title_text, container)
+            hdr.setStyleSheet("color: #0078D4; font-size: 13px; font-weight: 600; margin-top: 4px;")
+            content_layout.addWidget(hdr)
+            f = QFormLayout()
+            f.setContentsMargins(8, 2, 8, 2)
+            f.setVerticalSpacing(8)
+            f.setHorizontalSpacing(16)
+            content_layout.addLayout(f)
+            return f
 
-        # Max retries
-        self._max_retries = SpinBox(self)
-        self._max_retries.setRange(0, 50)
-        self._max_retries.setValue(config.max_retries)
-        form.addRow(BodyLabel("Max retries:", self), self._max_retries)
+        # Section 1: Transfer Mode & Operational Cycle
+        f_transfer = make_section("Transfer Protocol & Operational Cycle")
 
-        # Retry delay
-        self._retry_delay = SpinBox(self)
-        self._retry_delay.setRange(1, 600)
-        self._retry_delay.setValue(config.retry_delay)
-        form.addRow(BodyLabel("Retry delay (sec):", self), self._retry_delay)
-
-        # Reconciliation interval
-        self._recon_interval = SpinBox(self)
-        self._recon_interval.setRange(5, 600)
-        self._recon_interval.setValue(config.reconciliation_interval)
-        form.addRow(BodyLabel("Reconciliation interval (sec):", self), self._recon_interval)
-
-        # Overwrite policy
-        self._overwrite_policy = ComboBox(self)
-        self._overwrite_policy.addItem("Ask (show dialog)", userData="ask")
-        self._overwrite_policy.addItem("Always overwrite", userData="overwrite")
-        self._overwrite_policy.addItem("Always skip", userData="skip")
-        current_policy = config.overwrite_policy
-        for i in range(self._overwrite_policy.count()):
-            if self._overwrite_policy.itemData(i) == current_policy:
-                self._overwrite_policy.setCurrentIndex(i)
-                break
-        form.addRow(BodyLabel("Overwrite policy:", self), self._overwrite_policy)
-
-        # Network Drive Mode
-        self._network_mode = SwitchButton("Network Drive Mode", self)
-        self._network_mode.setOnText("Enabled (Fast Polling)")
-        self._network_mode.setOffText("Disabled")
-        self._network_mode.setChecked(config.network_drive_mode)
-        form.addRow(BodyLabel("Shared Network:", self), self._network_mode)
-
-        # Auto Cleanup
-        self._auto_cleanup = SwitchButton("Auto Cleanup", self)
-        self._auto_cleanup.setOnText("Enabled (Periodic deletion of transferred files)")
-        self._auto_cleanup.setOffText("Disabled")
-        self._auto_cleanup.setChecked(config.auto_cleanup_enabled)
-        form.addRow(BodyLabel("Source Cleanup:", self), self._auto_cleanup)
-
-        # Auto Cleanup Days Retention
-        self._auto_cleanup_days = SpinBox(self)
-        self._auto_cleanup_days.setRange(1, 365)
-        self._auto_cleanup_days.setValue(config.auto_cleanup_days)
-        form.addRow(BodyLabel("Cleanup Retention (Days):", self), self._auto_cleanup_days)
-
-        # Batch Compression
-        self._batch_compression = SwitchButton("Batch Compression", self)
-        self._batch_compression.setOnText("Enabled (Zip queued files together)")
-        self._batch_compression.setOffText("Disabled")
-        self._batch_compression.setChecked(config.batch_compression_enabled)
-        form.addRow(BodyLabel("Compression:", self), self._batch_compression)
-
-        # Zip Password
-        self._zip_password = PasswordLineEdit(self)
-        self._zip_password.setText(config.zip_password)
-        form.addRow(BodyLabel("Zip Password:", self), self._zip_password)
-
-        # Transfer Mode (Direct Raw 1:1 vs Batch ZIP Archive)
-        self._transfer_mode = ComboBox(self)
+        self._transfer_mode = ComboBox(container)
         self._transfer_mode.addItem("Direct Stream (Raw 1:1, Robocopy-style)", userData="direct")
         self._transfer_mode.addItem("Batch ZIP Archive", userData="zip")
+        self._transfer_mode.setMinimumHeight(32)
         curr_mode = getattr(config, "transfer_mode", "direct")
         for i in range(self._transfer_mode.count()):
             if self._transfer_mode.itemData(i) == curr_mode:
                 self._transfer_mode.setCurrentIndex(i)
                 break
-        form.addRow(BodyLabel("Transfer Mode:", self), self._transfer_mode)
+        f_transfer.addRow(BodyLabel("Transfer Mode:", container), self._transfer_mode)
 
-        # Operational Cycle Window
-        self._cycle_start = LineEdit(self)
+        self._cycle_start = LineEdit(container)
         self._cycle_start.setPlaceholderText("18:00")
         self._cycle_start.setText(getattr(config, "operational_cycle_start", "18:00"))
-        form.addRow(BodyLabel("Operational Cycle Start:", self), self._cycle_start)
+        self._cycle_start.setMinimumHeight(32)
+        f_transfer.addRow(BodyLabel("Operational Cycle Start:", container), self._cycle_start)
 
-        self._cycle_end = LineEdit(self)
+        self._cycle_end = LineEdit(container)
         self._cycle_end.setPlaceholderText("12:00")
         self._cycle_end.setText(getattr(config, "operational_cycle_end", "12:00"))
-        form.addRow(BodyLabel("Operational Cycle Cut-Off:", self), self._cycle_end)
+        self._cycle_end.setMinimumHeight(32)
+        f_transfer.addRow(BodyLabel("Operational Cycle Cut-Off:", container), self._cycle_end)
 
-        # Smart Verification
-        self._smart_verification = SwitchButton("Smart Verification", self)
+        self._smart_verification = SwitchButton("Smart Verification", container)
         self._smart_verification.setOnText("Enabled (Exact size + 24MB block SHA-256 for >2GB)")
         self._smart_verification.setOffText("Disabled (Full Hash Pass)")
         self._smart_verification.setChecked(getattr(config, "smart_verification_enabled", True))
-        form.addRow(BodyLabel("Verification Mode:", self), self._smart_verification)
+        f_transfer.addRow(BodyLabel("Verification Mode:", container), self._smart_verification)
 
-        # Max Concurrent Job Transfers
-        self._max_concurrent = ComboBox(self)
+        self._max_concurrent = ComboBox(container)
         self._max_concurrent.addItem("1 (Strictly Sequential)", userData=1)
         self._max_concurrent.addItem("2 Jobs at once", userData=2)
         self._max_concurrent.addItem("3 Jobs at once", userData=3)
         self._max_concurrent.addItem("4 Jobs at once", userData=4)
         self._max_concurrent.addItem("5 Jobs at once", userData=5)
         self._max_concurrent.addItem("All at once (Unlimited)", userData=0)
+        self._max_concurrent.setMinimumHeight(32)
         curr_conc = config.max_concurrent_transfers
         for i in range(self._max_concurrent.count()):
             if self._max_concurrent.itemData(i) == curr_conc:
                 self._max_concurrent.setCurrentIndex(i)
                 break
-        form.addRow(BodyLabel("Max Concurrent Jobs:", self), self._max_concurrent)
+        f_transfer.addRow(BodyLabel("Max Concurrent Jobs:", container), self._max_concurrent)
 
-        # Transfer Multi-Threading (/MT)
-        self._transfer_threads = ComboBox(self)
+        self._transfer_threads = ComboBox(container)
         self._transfer_threads.addItem("1 (Single Thread)", userData=1)
         self._transfer_threads.addItem("2 Threads", userData=2)
         self._transfer_threads.addItem("4 Threads (Recommended)", userData=4)
@@ -406,14 +361,96 @@ class SettingsDialog(MessageBoxBase):
         self._transfer_threads.addItem("32 Threads (Server)", userData=32)
         self._transfer_threads.addItem("64 Threads (Enterprise Server)", userData=64)
         self._transfer_threads.addItem("128 Threads (Max Robocopy Limit)", userData=128)
+        self._transfer_threads.setMinimumHeight(32)
         curr_threads = config.transfer_threads
         for i in range(self._transfer_threads.count()):
             if self._transfer_threads.itemData(i) == curr_threads:
                 self._transfer_threads.setCurrentIndex(i)
                 break
-        form.addRow(BodyLabel("Transfer Threads (/MT):", self), self._transfer_threads)
+        f_transfer.addRow(BodyLabel("Transfer Threads (/MT):", container), self._transfer_threads)
 
-        self.viewLayout.addLayout(form)
+        # Section 2: File Stability & Locks
+        f_stability = make_section("File Stability & Locking Checks")
+
+        self._stability_interval = SpinBox(container)
+        self._stability_interval.setRange(1, 120)
+        self._stability_interval.setValue(config.stability_check_interval)
+        self._stability_interval.setMinimumHeight(32)
+        f_stability.addRow(BodyLabel("Stability check interval (sec):", container), self._stability_interval)
+
+        self._stable_checks = SpinBox(container)
+        self._stable_checks.setRange(1, 20)
+        self._stable_checks.setValue(config.required_stable_checks)
+        self._stable_checks.setMinimumHeight(32)
+        f_stability.addRow(BodyLabel("Required stable checks:", container), self._stable_checks)
+
+        self._max_retries = SpinBox(container)
+        self._max_retries.setRange(0, 50)
+        self._max_retries.setValue(config.max_retries)
+        self._max_retries.setMinimumHeight(32)
+        f_stability.addRow(BodyLabel("Max retries:", container), self._max_retries)
+
+        self._retry_delay = SpinBox(container)
+        self._retry_delay.setRange(1, 600)
+        self._retry_delay.setValue(config.retry_delay)
+        self._retry_delay.setMinimumHeight(32)
+        f_stability.addRow(BodyLabel("Retry delay (sec):", container), self._retry_delay)
+
+        self._recon_interval = SpinBox(container)
+        self._recon_interval.setRange(5, 600)
+        self._recon_interval.setValue(config.reconciliation_interval)
+        self._recon_interval.setMinimumHeight(32)
+        f_stability.addRow(BodyLabel("Reconciliation interval (sec):", container), self._recon_interval)
+
+        self._overwrite_policy = ComboBox(container)
+        self._overwrite_policy.addItem("Ask (show dialog)", userData="ask")
+        self._overwrite_policy.addItem("Always overwrite", userData="overwrite")
+        self._overwrite_policy.addItem("Always skip", userData="skip")
+        self._overwrite_policy.setMinimumHeight(32)
+        current_policy = config.overwrite_policy
+        for i in range(self._overwrite_policy.count()):
+            if self._overwrite_policy.itemData(i) == current_policy:
+                self._overwrite_policy.setCurrentIndex(i)
+                break
+        f_stability.addRow(BodyLabel("Overwrite policy:", container), self._overwrite_policy)
+
+        # Section 3: Network & Retention
+        f_network = make_section("Network Drive & Source File Retention")
+
+        self._network_mode = SwitchButton("Network Drive Mode", container)
+        self._network_mode.setOnText("Enabled (Fast Polling)")
+        self._network_mode.setOffText("Disabled")
+        self._network_mode.setChecked(config.network_drive_mode)
+        f_network.addRow(BodyLabel("Shared Network:", container), self._network_mode)
+
+        self._auto_cleanup = SwitchButton("Auto Cleanup", container)
+        self._auto_cleanup.setOnText("Enabled (Periodic deletion of transferred files)")
+        self._auto_cleanup.setOffText("Disabled")
+        self._auto_cleanup.setChecked(config.auto_cleanup_enabled)
+        f_network.addRow(BodyLabel("Source Cleanup:", container), self._auto_cleanup)
+
+        self._auto_cleanup_days = SpinBox(container)
+        self._auto_cleanup_days.setRange(1, 365)
+        self._auto_cleanup_days.setValue(config.auto_cleanup_days)
+        self._auto_cleanup_days.setMinimumHeight(32)
+        f_network.addRow(BodyLabel("Cleanup Retention (Days):", container), self._auto_cleanup_days)
+
+        # Section 4: Compression & Encryption
+        f_zip = make_section("ZIP Compression & Encryption (Archive Mode Only)")
+
+        self._batch_compression = SwitchButton("Batch Compression", container)
+        self._batch_compression.setOnText("Enabled (Zip queued files together)")
+        self._batch_compression.setOffText("Disabled")
+        self._batch_compression.setChecked(config.batch_compression_enabled)
+        f_zip.addRow(BodyLabel("Compression:", container), self._batch_compression)
+
+        self._zip_password = PasswordLineEdit(container)
+        self._zip_password.setText(config.zip_password)
+        self._zip_password.setMinimumHeight(32)
+        f_zip.addRow(BodyLabel("Zip Password:", container), self._zip_password)
+
+        scroll.setWidget(container)
+        self.viewLayout.addWidget(scroll)
 
     def validate(self) -> bool:
         self._config.set("stability_check_interval", self._stability_interval.value())
