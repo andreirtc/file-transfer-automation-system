@@ -15,8 +15,11 @@ echo Compiling Windows Standalone Executable with PyInstaller...
 
 if not exist "dist\FileTransferAutomationSystem\templates" mkdir "dist\FileTransferAutomationSystem\templates"
 if not exist "dist\FileTransferAutomationSystem\reports" mkdir "dist\FileTransferAutomationSystem\reports"
+if not exist "dist\FileTransferAutomationSystem\config" mkdir "dist\FileTransferAutomationSystem\config"
+if not exist "dist\FileTransferAutomationSystem\assets" mkdir "dist\FileTransferAutomationSystem\assets"
 copy /y "templates\*.*" "dist\FileTransferAutomationSystem\templates\" >nul 2>&1
 copy /y "config\*.*" "dist\FileTransferAutomationSystem\config\" >nul 2>&1
+copy /y "assets\*.*" "dist\FileTransferAutomationSystem\assets\" >nul 2>&1
 
 echo.
 echo ========================================================
