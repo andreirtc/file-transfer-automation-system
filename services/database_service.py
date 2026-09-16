@@ -599,6 +599,13 @@ class DatabaseService:
 
     def _row_to_record(self, row: sqlite3.Row) -> TransferRecord:
         verification = row["verification_passed"]
+        b_date = row["batch_date"] if "batch_date" in row.keys() else None
+        if not b_date:
+            if row["transfer_completed"]:
+                b_date = row["transfer_completed"][:10]
+            elif row["detected_at"]:
+                b_date = row["detected_at"][:10]
+
         return TransferRecord(
             id=row["id"],
             job_id=row["job_id"],
@@ -617,5 +624,5 @@ class DatabaseService:
             retry_count=row["retry_count"],
             verification_passed=bool(verification) if verification is not None else None,
             override_window=bool(row["override_window"]),
-            batch_date=row["batch_date"] if "batch_date" in row.keys() else None,
+            batch_date=b_date,
         )

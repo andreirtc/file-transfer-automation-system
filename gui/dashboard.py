@@ -189,6 +189,16 @@ class DashboardWidget(QWidget):
         self._btn_cycle_settings.clicked.connect(self.configure_cycle_requested.emit)
         batch_layout.addWidget(self._btn_cycle_settings)
 
+        self._batch_count_badge = BodyLabel("", self._batch_card)
+        self._batch_count_badge.setStyleSheet("color: #797775; font-size: 12px; font-weight: 500;")
+        batch_layout.addWidget(self._batch_count_badge)
+
+        self._btn_switch_batch = PushButton(FluentIcon.SYNC, "Switch Batch", self._batch_card)
+        self._btn_switch_batch.setFixedHeight(28)
+        self._btn_switch_batch.setVisible(False)
+        self._btn_switch_batch.clicked.connect(self._on_switch_batch_clicked)
+        batch_layout.addWidget(self._btn_switch_batch)
+
         batch_layout.addStretch(1)
 
         self._batch_filter_switch = SwitchButton("Filter Table to Batch", self._batch_card)
@@ -360,12 +370,14 @@ class DashboardWidget(QWidget):
     def update_record(self, record: TransferRecord) -> None:
         """Update a single record in the transfer table."""
         self._transfer_table.update_record(record)
+        self._update_batch_feedback()
 
     def set_records(self, records: list[TransferRecord]) -> None:
         """Replace all records in the transfer table."""
         self._transfer_table.set_records(records)
         if hasattr(self, "_batch_filter_switch") and self._batch_filter_switch.isChecked():
             self._transfer_table.set_batch_date_filter(self.get_selected_batch_date())
+        self._update_batch_feedback()
 
     @property
     def transfer_table(self) -> TransferTableWidget:
@@ -408,6 +420,64 @@ class DashboardWidget(QWidget):
         )
         if hasattr(self, "_batch_filter_switch") and self._batch_filter_switch.isChecked():
             self._transfer_table.set_batch_date_filter(selected_date)
+        self._update_batch_feedback()
+
+    def _update_batch_feedback(self) -> None:
+        if not hasattr(self, "_batch_count_badge"):
+            return
+
+        selected_date = self.get_selected_batch_date()
+        records = self._transfer_table._model._records
+        matching_count = 0
+        other_batches: dict[str, int] = {}
+
+        from services.report_service import ReportService
+        cycle_start = getattr(self._config, "operational_cycle_start", "18:00") if self._config else "18:00"
+        cycle_end = getattr(self._config, "operational_cycle_end", "12:00") if self._config else "12:00"
+
+        for r in records:
+            b_date = r.batch_date
+            if not b_date:
+                dt = None
+                if r.source_modified:
+                    dt = datetime.fromtimestamp(r.source_modified)
+                elif r.transfer_completed:
+                    dt = r.transfer_completed
+                elif r.detected_at:
+                    dt = r.detected_at
+                if dt:
+                    b_date = ReportService.resolve_operational_batch_date(dt, cycle_start, cycle_end)
+            if b_date == selected_date:
+                matching_count += 1
+            elif b_date:
+                other_batches[b_date] = other_batches.get(b_date, 0) + 1
+
+        if matching_count > 0:
+            self._batch_count_badge.setText(f"({matching_count} file{'s' if matching_count != 1 else ''} in batch)")
+            self._batch_count_badge.setStyleSheet("color: #107C10; font-weight: 600; font-size: 12px;")
+            self._btn_switch_batch.setVisible(False)
+        elif other_batches:
+            top_other = sorted(other_batches.items(), key=lambda x: x[1], reverse=True)[0]
+            self._batch_count_badge.setText(f"(0 in this batch · {top_other[1]} in {top_other[0]})")
+            self._batch_count_badge.setStyleSheet("color: #CA5010; font-weight: 600; font-size: 12px;")
+            self._btn_switch_batch.setText(f"Switch to {top_other[0]}")
+            self._btn_switch_batch.setProperty("target_date", top_other[0])
+            self._btn_switch_batch.setVisible(True)
+        elif records:
+            self._batch_count_badge.setText("(0 files in this batch)")
+            self._batch_count_badge.setStyleSheet("color: #797775; font-size: 12px;")
+            self._btn_switch_batch.setVisible(False)
+        else:
+            self._batch_count_badge.setText("(No files detected)")
+            self._batch_count_badge.setStyleSheet("color: #797775; font-size: 12px;")
+            self._btn_switch_batch.setVisible(False)
+
+    def _on_switch_batch_clicked(self) -> None:
+        target_str = self._btn_switch_batch.property("target_date")
+        if target_str:
+            qdate = QDate.fromString(target_str, "yyyy-MM-dd")
+            if qdate.isValid():
+                self._calendar_picker.setDate(qdate)
 
     def _on_batch_date_changed(self, date) -> None:
         self._update_cycle_label()

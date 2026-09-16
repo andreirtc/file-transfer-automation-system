@@ -380,4 +380,60 @@ def test_report_data_auto_matches_with_whitespace_and_separators(config, test_db
     assert gocanvas_row["remarks"] == "Completed successfully"
 
 
+def test_operational_batch_date_persistence_and_querying(config, test_db):
+    """Verify that records with batch_date='2026-09-15' are retrieved under 2026-09-15 even if transferred Sept 16."""
+    job = TransferJob(name="ORACLE_PROD", source_folder="/src/oracle", destination_folder="/dst/oracle")
+    test_db.save_job(job)
+
+    # File 1: Modified Sept 15 at 23:15
+    f1_dt = datetime(2026, 9, 15, 23, 15, 0)
+    b1_date = ReportService.resolve_operational_batch_date(f1_dt, "18:00", "12:00")
+    assert b1_date == "2026-09-15"
+
+    rec1 = TransferRecord(
+        job_id=job.id,
+        file_name="ORACLE_20260915_231500.dmp",
+        source_path="/src/oracle/ORACLE_20260915_231500.dmp",
+        destination_path="/dst/oracle/ORACLE_20260915_231500.dmp",
+        file_size=500_000_000,
+        source_modified=f1_dt.timestamp(),
+        status=FileStatus.COMPLETED,
+        transfer_completed=f1_dt,
+        verification_passed=True,
+        batch_date=b1_date,
+    )
+
+    # File 2: Tumatawid file - Modified Sept 16 at 02:30 AM
+    f2_dt = datetime(2026, 9, 16, 2, 30, 0)
+    b2_date = ReportService.resolve_operational_batch_date(f2_dt, "18:00", "12:00")
+    assert b2_date == "2026-09-15"
+
+    rec2 = TransferRecord(
+        job_id=job.id,
+        file_name="ORACLE_20260916_023000.dmp",
+        source_path="/src/oracle/ORACLE_20260916_023000.dmp",
+        destination_path="/dst/oracle/ORACLE_20260916_023000.dmp",
+        file_size=600_000_000,
+        source_modified=f2_dt.timestamp(),
+        status=FileStatus.COMPLETED,
+        transfer_completed=f2_dt,
+        verification_passed=True,
+        batch_date=b2_date,
+    )
+
+    test_db.save_records_batch([rec1, rec2])
+
+    # Querying Sept 15 must return both records
+    sept15_recs = test_db.get_records_by_date("2026-09-15")
+    assert len(sept15_recs) == 2
+    filenames = {r.file_name for r in sept15_recs}
+    assert "ORACLE_20260915_231500.dmp" in filenames
+    assert "ORACLE_20260916_023000.dmp" in filenames
+
+    # Querying Sept 16 must NOT return either record
+    sept16_recs = test_db.get_records_by_date("2026-09-16")
+    assert len(sept16_recs) == 0
+
+
+
 

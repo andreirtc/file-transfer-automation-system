@@ -256,8 +256,11 @@ class MainWindow(MSFluentWindow):
             self._manager.set_job(active_job)
             self._refresh_all_ui(active_job_id=active_job.id)
 
-            records = self._manager.get_all_records()
-            self._dashboard.set_records(records)
+            history = self._manager.get_history(job_id=active_job.id, limit=100)
+            active = self._manager.get_all_records(job_id=active_job.id)
+            merged = {r.id: r for r in history}
+            merged.update({r.id: r for r in active})
+            self._dashboard.set_records(list(merged.values()))
 
             logger.info("Loaded %d transfer jobs on startup", len(jobs))
 

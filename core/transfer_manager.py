@@ -753,6 +753,12 @@ class JobController(QObject):
                         if self.job.schedule_mode == "window":
                             status = FileStatus.WAITING_FOR_WINDOW
 
+                        from services.report_service import ReportService
+                        c_start = getattr(self._config, "operational_cycle_start", "18:00")
+                        c_end = getattr(self._config, "operational_cycle_end", "12:00")
+                        file_dt = datetime.fromtimestamp(mtime) if mtime else datetime.now()
+                        b_date = ReportService.resolve_operational_batch_date(file_dt, c_start, c_end)
+
                         rec = TransferRecord(
                             job_id=self.job.id,
                             file_name=Path(fpath).name,
@@ -761,6 +767,7 @@ class JobController(QObject):
                             file_size=fsize,
                             source_modified=mtime,
                             status=status,
+                            batch_date=b_date,
                         )
                         self._active_records[fpath] = rec
                         batch_records.append(rec)
@@ -1082,15 +1089,15 @@ class JobController(QObject):
                 continue
 
             file_dt = datetime.fromtimestamp(mtime)
-            # If a specific batch date is targeted, only include files falling within its operational cycle
-            if start_dt and end_dt:
-                if not (start_dt <= file_dt <= end_dt):
-                    continue
+            file_bdate = ReportService.resolve_operational_batch_date(file_dt, c_start, c_end)
+            # If a specific batch date is targeted, only include files matching its operational cycle
+            if target_batch_date and file_bdate != target_batch_date:
+                continue
 
             if self._db.check_already_transferred(self.job.id, fpath, fsize, mtime):
                 continue
 
-            assigned_bdate = target_batch_date or ReportService.resolve_operational_batch_date(file_dt, c_start, c_end)
+            assigned_bdate = target_batch_date or file_bdate
 
             if fpath not in self._active_records:
                 rec = TransferRecord(
@@ -1400,6 +1407,12 @@ class TransferManager(QObject):
                                 if existing_rec not in waiting and not existing_rec.status.is_terminal():
                                     waiting.append(existing_rec)
                             else:
+                                from services.report_service import ReportService
+                                c_start = getattr(self._config, "operational_cycle_start", "18:00")
+                                c_end = getattr(self._config, "operational_cycle_end", "12:00")
+                                file_dt = datetime.fromtimestamp(mtime) if mtime else datetime.now()
+                                b_date = ReportService.resolve_operational_batch_date(file_dt, c_start, c_end)
+
                                 rec = TransferRecord(
                                     job_id=ctrl.job.id,
                                     file_name=Path(fpath).name,
@@ -1408,6 +1421,7 @@ class TransferManager(QObject):
                                     file_size=fsize,
                                     source_modified=mtime,
                                     status=FileStatus.READY,
+                                    batch_date=b_date,
                                 )
                                 ctrl._active_records[fpath] = rec
                                 waiting.append(rec)
@@ -1886,8 +1900,11 @@ class TransferManager(QObject):
                 def _bg_generate_report():
                     try:
                         from services.report_service import ReportService
+                        c_start = getattr(self._config, "operational_cycle_start", "18:00")
+                        c_end = getattr(self._config, "operational_cycle_end", "12:00")
+                        target_batch = ReportService.resolve_operational_batch_date(datetime.now(), c_start, c_end)
                         report_svc = ReportService(self._config, self._db)
-                        out_file = report_svc.generate_daily_report(datetime.now().date())
+                        out_file = report_svc.generate_daily_report(target_batch)
                         if "_latest" in out_file.name:
                             self.log_message.emit(
                                 "WARNING",

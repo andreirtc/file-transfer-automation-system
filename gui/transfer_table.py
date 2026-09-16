@@ -173,7 +173,19 @@ class TransferTableModel(QAbstractTableModel):
         elif col == 1:
             return record.status.value
         elif col == 2:
-            return record.batch_date or "—"
+            b_date = record.batch_date
+            if not b_date:
+                dt = None
+                if record.source_modified:
+                    dt = datetime.fromtimestamp(record.source_modified)
+                elif record.transfer_completed:
+                    dt = record.transfer_completed
+                elif record.detected_at:
+                    dt = record.detected_at
+                if dt:
+                    from services.report_service import ReportService
+                    b_date = ReportService.resolve_operational_batch_date(dt)
+            return b_date or "—"
         elif col == 3:
             return format_file_size(record.file_size)
         elif col == 4:
@@ -233,6 +245,8 @@ class TransferFilterProxyModel(QSortFilterProxyModel):
                 dt = None
                 if record.source_modified:
                     dt = datetime.fromtimestamp(record.source_modified)
+                elif record.transfer_completed:
+                    dt = record.transfer_completed
                 elif record.detected_at:
                     dt = record.detected_at
                 if dt:
