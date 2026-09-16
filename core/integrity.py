@@ -80,11 +80,53 @@ class IntegrityVerifier:
 
         return h.hexdigest()
 
+    def hash_blocks(
+        self,
+        file_path: str | Path,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> str:
+        """
+        Compute SHA-256 across header, middle, and tail blocks (24 MB total)
+        for near-instantaneous integrity verification of massive files (>2 GB).
+        """
+        path = Path(file_path)
+        total_size = path.stat().st_size
+        block_size = 8 * 1024 * 1024  # 8 MB
+        h = hashlib.new(self._algorithm)
+
+        if total_size <= block_size * 3:
+            return self.hash_file(path, progress_callback)
+
+        with open(path, "rb") as f:
+            # 1. Header block
+            chunk1 = f.read(block_size)
+            h.update(chunk1)
+            if progress_callback:
+                progress_callback(len(chunk1), total_size)
+
+            # 2. Middle block
+            mid_pos = (total_size - block_size) // 2
+            f.seek(mid_pos)
+            chunk2 = f.read(block_size)
+            h.update(chunk2)
+            if progress_callback:
+                progress_callback(len(chunk1) + len(chunk2), total_size)
+
+            # 3. Tail block
+            f.seek(total_size - block_size)
+            chunk3 = f.read(block_size)
+            h.update(chunk3)
+            if progress_callback:
+                progress_callback(total_size, total_size)
+
+        return f"smart_{h.hexdigest()}"
+
     def compare_files(
         self,
         source: str | Path,
         destination: str | Path,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        smart_mode: bool = False,
     ) -> tuple[bool, str, str]:
         """
         Compare two files by their hashes.
@@ -94,18 +136,27 @@ class IntegrityVerifier:
             destination: Path to the destination file.
             progress_callback: Optional (phase, bytes_read, total) callback.
                 phase is "source" or "destination".
+            smart_mode: If True and file > 2 GB, uses multi-block hashing for near-0% CPU load.
 
         Returns:
             (match: bool, source_hash: str, dest_hash: str)
         """
+        src_path = Path(source)
+        dst_path = Path(destination)
+        total_size = src_path.stat().st_size if src_path.exists() else 0
+
         src_cb = None
         dst_cb = None
         if progress_callback:
             src_cb = lambda br, total: progress_callback("source", br, total)
             dst_cb = lambda br, total: progress_callback("destination", br, total)
 
-        source_hash = self.hash_file(source, src_cb)
-        dest_hash = self.hash_file(destination, dst_cb)
+        if smart_mode and total_size > 2 * 1024 * 1024 * 1024:
+            source_hash = self.hash_blocks(src_path, src_cb)
+            dest_hash = self.hash_blocks(dst_path, dst_cb)
+        else:
+            source_hash = self.hash_file(src_path, src_cb)
+            dest_hash = self.hash_file(dst_path, dst_cb)
 
         return (source_hash == dest_hash, source_hash, dest_hash)
 
@@ -114,6 +165,7 @@ class IntegrityVerifier:
         source: str | Path,
         destination: str | Path,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        smart_mode: bool = False,
     ) -> VerificationResult:
         """
         Perform full post-transfer verification.
@@ -166,7 +218,7 @@ class IntegrityVerifier:
         # Compare hashes
         try:
             match, src_hash, dst_hash = self.compare_files(
-                source, destination, progress_callback
+                source, destination, progress_callback, smart_mode=smart_mode
             )
             result.source_hash = src_hash
             result.destination_hash = dst_hash

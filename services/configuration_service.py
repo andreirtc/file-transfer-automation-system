@@ -107,7 +107,11 @@ _DEFAULTS: dict[str, Any] = {
     "network_drive_mode": False,         # optimize for shared network drives
     "auto_cleanup_enabled": False,       # enable automatic deletion of source files
     "auto_cleanup_days": 7,              # days to retain source files after completed transfer before auto-cleanup
-    "batch_compression_enabled": True,   # compress all queued files into a single zip
+    "batch_compression_enabled": False,  # compress all queued files into a single zip
+    "transfer_mode": "direct",           # "direct" (raw 1:1 stream, Robocopy-style) or "zip" (batch compressed)
+    "operational_cycle_start": "18:00",  # start time of operational backup cycle (HH:MM)
+    "operational_cycle_end": "12:00",    # end time of operational backup cycle next day (HH:MM)
+    "smart_verification_enabled": True,  # size + block hash check for large files (>2GB)
     "zip_password": "password123",       # default password for zip files
     "max_concurrent_transfers": 1,       # max simultaneous job batch transfers (1=sequential, 0=unlimited)
     "transfer_threads": 4,               # parallel file transfer threads per job (/MT)
@@ -177,6 +181,10 @@ class ConfigurationService:
     def set(self, key: str, value: Any) -> None:
         """Set a configuration value and persist."""
         self._data[key] = value
+        if key == "batch_compression_enabled":
+            self._data["transfer_mode"] = "zip" if value else "direct"
+        elif key == "transfer_mode":
+            self._data["batch_compression_enabled"] = (value == "zip")
 
     def get_int(self, key: str, default: int = 0) -> int:
         """Get a configuration value as an integer."""
@@ -265,6 +273,26 @@ class ConfigurationService:
     @property
     def batch_compression_enabled(self) -> bool:
         return self.get_bool("batch_compression_enabled", True)
+
+    @property
+    def transfer_mode(self) -> str:
+        """Returns 'direct' (raw 1:1, Robocopy-style) or 'zip' (batch compressed)."""
+        return self.get_str("transfer_mode", "direct")
+
+    @property
+    def operational_cycle_start(self) -> str:
+        """Start time of operational backup cycle (e.g. '18:00')."""
+        return self.get_str("operational_cycle_start", "18:00")
+
+    @property
+    def operational_cycle_end(self) -> str:
+        """End time of operational backup cycle next day (e.g. '12:00')."""
+        return self.get_str("operational_cycle_end", "12:00")
+
+    @property
+    def smart_verification_enabled(self) -> bool:
+        """Enable fast smart verification (size + block hash) for large files (>2GB)."""
+        return self.get_bool("smart_verification_enabled", True)
 
     @property
     def zip_password(self) -> str:

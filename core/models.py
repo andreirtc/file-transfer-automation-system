@@ -90,6 +90,7 @@ class TransferRecord:
     retry_count: int = 0
     verification_passed: Optional[bool] = None
     override_window: bool = False
+    batch_date: Optional[str] = None
 
     def __post_init__(self):
         if self.detected_at is None:

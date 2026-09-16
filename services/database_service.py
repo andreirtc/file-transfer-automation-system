@@ -105,6 +105,7 @@ class DatabaseService:
                     retry_count       INTEGER NOT NULL DEFAULT 0,
                     verification_passed INTEGER,
                     override_window   INTEGER NOT NULL DEFAULT 0,
+                    batch_date        TEXT,
                     FOREIGN KEY (job_id) REFERENCES transfer_jobs(id)
                 );
 
@@ -114,6 +115,8 @@ class DatabaseService:
                     ON transfer_records(source_path);
                 CREATE INDEX IF NOT EXISTS idx_records_status
                     ON transfer_records(status);
+                CREATE INDEX IF NOT EXISTS idx_records_batch_date
+                    ON transfer_records(batch_date);
                 """
             )
             conn.commit()
@@ -133,6 +136,11 @@ class DatabaseService:
                 
             try:
                 conn.execute("ALTER TABLE transfer_records ADD COLUMN override_window INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                conn.execute("ALTER TABLE transfer_records ADD COLUMN batch_date TEXT")
             except sqlite3.OperationalError:
                 pass
 
@@ -257,8 +265,8 @@ class DatabaseService:
                         (id, job_id, file_name, source_path, destination_path,
                          file_size, source_modified, source_hash, destination_hash,
                          status, detected_at, transfer_started, transfer_completed,
-                        error_message, retry_count, verification_passed, override_window)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        error_message, retry_count, verification_passed, override_window, batch_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.id,
@@ -284,6 +292,7 @@ class DatabaseService:
                             record.override_window if isinstance(record.override_window, int) 
                             else int(record.override_window)
                         ),
+                        record.batch_date,
                     ),
                 )
                 conn.commit()
@@ -308,7 +317,8 @@ class DatabaseService:
                         self._dt_to_str(record.transfer_started), self._dt_to_str(record.transfer_completed),
                         record.error_message, record.retry_count,
                         (record.verification_passed if isinstance(record.verification_passed, int) else (int(record.verification_passed) if record.verification_passed is not None else None)),
-                        (record.override_window if isinstance(record.override_window, int) else int(record.override_window))
+                        (record.override_window if isinstance(record.override_window, int) else int(record.override_window)),
+                        record.batch_date,
                     ))
 
                 conn.executemany(
@@ -317,8 +327,8 @@ class DatabaseService:
                         (id, job_id, file_name, source_path, destination_path,
                          file_size, source_modified, source_hash, destination_hash,
                          status, detected_at, transfer_started, transfer_completed,
-                         error_message, retry_count, verification_passed, override_window)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         error_message, retry_count, verification_passed, override_window, batch_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     data
                 )
@@ -438,9 +448,9 @@ class DatabaseService:
         try:
             query = """
                 SELECT * FROM transfer_records
-                WHERE (transfer_completed LIKE ? OR (transfer_completed IS NULL AND detected_at LIKE ?))
+                WHERE (batch_date = ? OR (batch_date IS NULL AND (transfer_completed LIKE ? OR (transfer_completed IS NULL AND detected_at LIKE ?))))
             """
-            params: list[Any] = [f"{date_prefix}%", f"{date_prefix}%"]
+            params: list[Any] = [date_prefix, f"{date_prefix}%", f"{date_prefix}%"]
             if job_id:
                 query += " AND job_id = ?"
                 params.append(job_id)
@@ -603,4 +613,5 @@ class DatabaseService:
             retry_count=row["retry_count"],
             verification_passed=bool(verification) if verification is not None else None,
             override_window=bool(row["override_window"]),
+            batch_date=row["batch_date"] if "batch_date" in row.keys() else None,
         )

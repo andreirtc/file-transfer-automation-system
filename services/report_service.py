@@ -52,6 +52,79 @@ class ReportService:
             return ""
         return re.sub(r"[\s_\-]+", "", str(s)).upper()
 
+    @staticmethod
+    def resolve_operational_batch_date(
+        dt: datetime,
+        cycle_start_str: str = "18:00",
+        cycle_end_str: str = "12:00",
+    ) -> str:
+        """
+        Resolve a file timestamp to its logical operational batch date (YYYY-MM-DD).
+
+        Solves the midnight-crossing ('tumatawid') problem:
+        If a cycle runs from 18:00 to 12:00 next day:
+        - A file created at 23:15 on Sept 15 -> '2026-09-15'
+        - A file completed at 02:30 AM on Sept 16 -> '2026-09-15'
+        - A file completed at 11:45 AM on Sept 16 -> '2026-09-15'
+        - A file created after 12:00 PM on Sept 16 -> '2026-09-16'
+        """
+        from datetime import timedelta, time as dtime
+        try:
+            sh, sm = map(int, cycle_start_str.split(":"))
+            eh, em = map(int, cycle_end_str.split(":"))
+            start_t = dtime(sh, sm)
+            end_t = dtime(eh, em)
+        except Exception:
+            start_t = dtime(18, 0)
+            end_t = dtime(12, 0)
+
+        file_t = dt.time()
+        file_date = dt.date()
+
+        if start_t > end_t:
+            # Crosses midnight (e.g. 18:00 to 12:00)
+            if file_t < end_t:
+                # Early morning hours up to cut-off belong to previous day's batch
+                return (file_date - timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                return file_date.strftime("%Y-%m-%d")
+        else:
+            # Same day window (e.g. 08:00 to 17:00)
+            return file_date.strftime("%Y-%m-%d")
+
+    @staticmethod
+    def get_cycle_range_for_date(
+        target_date: date | str,
+        cycle_start_str: str = "18:00",
+        cycle_end_str: str = "12:00",
+    ) -> tuple[datetime, datetime]:
+        """
+        Return (cycle_start_dt, cycle_end_dt) for a specific target batch date.
+        Example: target='2026-09-15', start='18:00', end='12:00'
+        Returns (2026-09-15 18:00:00, 2026-09-16 12:00:00).
+        """
+        from datetime import timedelta, time as dtime
+        if isinstance(target_date, str):
+            base_date = datetime.strptime(target_date[:10], "%Y-%m-%d").date()
+        else:
+            base_date = target_date
+
+        try:
+            sh, sm = map(int, cycle_start_str.split(":"))
+            eh, em = map(int, cycle_end_str.split(":"))
+        except Exception:
+            sh, sm = 18, 0
+            eh, em = 12, 0
+
+        start_dt = datetime.combine(base_date, dtime(sh, sm))
+        if dtime(sh, sm) > dtime(eh, em):
+            # Overnight cycle
+            end_dt = datetime.combine(base_date + timedelta(days=1), dtime(eh, em))
+        else:
+            end_dt = datetime.combine(base_date, dtime(eh, em))
+
+        return start_dt, end_dt
+
     def __init__(self, config: ConfigurationService, db: DatabaseService):
         self._config = config
         self._db = db

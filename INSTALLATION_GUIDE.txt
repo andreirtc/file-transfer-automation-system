@@ -102,7 +102,28 @@ STEP 5: (OPTIONAL) CONFIGURE AUTO-START ON WINDOWS BOOT
     intervals.
 
 
-5. DAILY REPORT & CHECKLIST CONFIGURATION
+5. DIRECT RAW 1:1 STREAMING & OPERATIONAL BATCH CYCLES
+--------------------------------------------------------------------------------
+1. Direct Stream Transfer (Robocopy-Style):
+   - Optimized for sensitive raw database backups (e.g. Oracle .dmp files).
+   - Zero-compression, direct 1:1 streaming that preserves original filenames,
+     exact byte counts, and source modification timestamps (mtime).
+   - Eliminates CPU and memory overhead, transferring files at maximum network line rate.
+2. Smart Verification:
+   - For massive files (> 2 GB), exact byte-level size checking is combined with
+     multi-block SHA-256 hashing (verifying 24 MB across head, mid, and tail blocks
+     in under 1 second), preventing multi-gigabyte hash delays.
+3. Operational Cycle & 'Tumatawid' Midnight-Crossing:
+   - Configurable operational cycle window (default 18:00 to 12:00 cut-off next day).
+   - Overnight files crossing midnight (e.g., started Sept 15 23:15, finished Sept 16
+     02:30) automatically resolve to the Sept 15 operational batch date.
+4. Backlog & Delayed Operations:
+   - Operators dealing with multi-day source directories can use the Target Batch
+     Date selector in the Job Workspace, view the exact active cycle, toggle "Filter Table
+     to Batch", and click "Transfer Batch Files" to safely isolate and transfer that batch.
+
+
+6. DAILY REPORT & CHECKLIST CONFIGURATION
 --------------------------------------------------------------------------------
 1. Navigate to the "Daily Report" tab in the left sidebar.
 2. Click "Configure Systems" to customize your monitored systems (TFS42PROD,

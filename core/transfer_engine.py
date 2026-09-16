@@ -44,11 +44,13 @@ class TransferEngine:
         integrity_verifier: IntegrityVerifier,
         temp_prefix: str = ".",
         temp_suffix: str = ".transfer_tmp",
+        config: Optional[Any] = None,
     ):
         self._safety = safety_checker
         self._integrity = integrity_verifier
         self._temp_prefix = temp_prefix
         self._temp_suffix = temp_suffix
+        self._config = config
 
     def transfer_file(
         self,
@@ -123,8 +125,9 @@ class TransferEngine:
                     f"verify_{phase}", cur, tot
                 )
 
+            smart_mode = getattr(self._config, "smart_verification_enabled", True) if self._config else True
             verification = self._integrity.verify_transfer(
-                source, dest_temp, verify_cb
+                source, dest_temp, verify_cb, smart_mode=smart_mode
             )
             result.verification = verification
 
@@ -148,6 +151,10 @@ class TransferEngine:
                 if dest_final.exists():
                     dest_final.unlink()
                 dest_temp.rename(dest_final)
+                try:
+                    shutil.copystat(source, dest_final)
+                except OSError:
+                    pass
             except OSError as e:
                 self._cleanup_temp(dest_temp)
                 record.status = FileStatus.FAILED
@@ -271,8 +278,8 @@ class TransferEngine:
         import time
         total_size = source.stat().st_size
         bytes_copied = 0
-        # Use 8 MB chunks for large files (> 1 GB) for maximum sequential throughput; 1 MB otherwise
-        chunk_size = max(self._integrity._chunk_size, 1024 * 1024 * 8 if total_size > 1024 * 1024 * 1024 else 1048576)
+        # Use 16 MB chunks for large files (> 1 GB) for maximum sequential throughput; 1 MB otherwise
+        chunk_size = max(self._integrity._chunk_size, 1024 * 1024 * 16 if total_size > 1024 * 1024 * 1024 else 1048576)
         last_callback_time = 0.0
 
         with open(source, "rb") as src, open(destination, "wb") as dst:

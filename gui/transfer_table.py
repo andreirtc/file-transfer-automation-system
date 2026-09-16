@@ -50,6 +50,7 @@ _STATUS_COLORS: dict[FileStatus, str] = {
 _COLUMNS = [
     "File Name",
     "Status",
+    "Batch Date",
     "Size",
     "Detected",
     "Last Modified",
@@ -158,8 +159,10 @@ class TransferTableModel(QAbstractTableModel):
             if col == 1:  # Status column
                 color = _STATUS_COLORS.get(record.status, "#000000")
                 return QBrush(QColor(color))
+            elif col == 2:  # Batch Date column
+                return QBrush(QColor("#0078D4"))
         elif role == Qt.ItemDataRole.ToolTipRole:
-            if col == 7 and record.error_message:  # Error column
+            if col == 8 and record.error_message:  # Error column
                 return record.error_message
 
         return None
@@ -170,22 +173,24 @@ class TransferTableModel(QAbstractTableModel):
         elif col == 1:
             return record.status.value
         elif col == 2:
-            return format_file_size(record.file_size)
+            return record.batch_date or "—"
         elif col == 3:
-            return self._format_dt(record.detected_at)
+            return format_file_size(record.file_size)
         elif col == 4:
+            return self._format_dt(record.detected_at)
+        elif col == 5:
             if record.source_modified:
                 return datetime.fromtimestamp(record.source_modified).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
             return ""
-        elif col == 5:
-            return self._format_dt(record.transfer_completed)
         elif col == 6:
+            return self._format_dt(record.transfer_completed)
+        elif col == 7:
             if record.verification_passed is None:
                 return ""
             return "✓ Passed" if record.verification_passed else "✗ Failed"
-        elif col == 7:
+        elif col == 8:
             return record.error_message or ""
         return ""
 
@@ -194,6 +199,48 @@ class TransferTableModel(QAbstractTableModel):
         if dt:
             return dt.strftime("%Y-%m-%d %H:%M:%S")
         return ""
+
+
+class TransferFilterProxyModel(QSortFilterProxyModel):
+    """Sort-filter proxy model that filters by status and/or batch date."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._status_filter: str = ""
+        self._batch_date_filter: Optional[str] = None
+
+    def set_status_filter(self, status: str) -> None:
+        self._status_filter = status
+        self.invalidateFilter()
+
+    def set_batch_date_filter(self, batch_date: Optional[str]) -> None:
+        self._batch_date_filter = batch_date
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex = QModelIndex()) -> bool:
+        model: TransferTableModel = self.sourceModel()
+        record = model.get_record(source_row)
+        if not record:
+            return False
+
+        if self._status_filter and record.status.value != self._status_filter:
+            return False
+
+        if self._batch_date_filter:
+            b_date = record.batch_date
+            if not b_date:
+                from services.report_service import ReportService
+                dt = None
+                if record.source_modified:
+                    dt = datetime.fromtimestamp(record.source_modified)
+                elif record.detected_at:
+                    dt = record.detected_at
+                if dt:
+                    b_date = ReportService.resolve_operational_batch_date(dt)
+            if b_date != self._batch_date_filter:
+                return False
+
+        return True
 
 
 class TransferTableWidget(QWidget):
@@ -207,9 +254,8 @@ class TransferTableWidget(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._model = TransferTableModel(self)
-        self._proxy = QSortFilterProxyModel(self)
+        self._proxy = TransferFilterProxyModel(self)
         self._proxy.setSourceModel(self._model)
-        self._proxy.setFilterKeyColumn(1)  # Filter on Status column
 
         self._setup_ui()
 
@@ -247,12 +293,13 @@ class TransferTableWidget(QWidget):
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # File Name
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Status
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Size
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Detected
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Modified
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Transfer
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Verify
-        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)  # Error
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Batch Date
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Size
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Detected
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Modified
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Transfer
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Verify
+        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)  # Error
 
         self._table.clicked.connect(
             lambda idx: self.row_selected.emit(self._proxy.mapToSource(idx).row())
@@ -270,12 +317,15 @@ class TransferTableWidget(QWidget):
     def update_record(self, record: TransferRecord) -> None:
         self._model.update_record(record)
 
+    def set_batch_date_filter(self, batch_date: Optional[str]) -> None:
+        self._proxy.set_batch_date_filter(batch_date)
+
+    def set_status_filter(self, status: str) -> None:
+        self._proxy.set_status_filter(status)
+
     def _on_filter_changed(self, index: int) -> None:
         filter_text = self._filter_combo.currentData()
-        if filter_text:
-            self._proxy.setFilterFixedString(filter_text)
-        else:
-            self._proxy.setFilterFixedString("")
+        self._proxy.set_status_filter(filter_text or "")
 
     def _on_context_menu(self, pos) -> None:
         idx = self._table.indexAt(pos)

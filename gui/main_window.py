@@ -85,7 +85,7 @@ class MainWindow(MSFluentWindow):
         self._main_dashboard = MainDashboardWidget(self)
         self._main_dashboard.setObjectName("MainDashboardInterface")
 
-        self._dashboard = DashboardWidget(self)
+        self._dashboard = DashboardWidget(config=self._config, parent=self)
         self._dashboard.setObjectName("JobWorkspaceInterface")
 
         self._docs_page = DocsPageWidget(self)
@@ -207,6 +207,7 @@ class MainWindow(MSFluentWindow):
         self._dashboard.start_monitoring_requested.connect(self._on_start_monitoring)
         self._dashboard.stop_monitoring_requested.connect(self._on_stop_monitoring)
         self._dashboard.sync_now_requested.connect(self._on_sync_now)
+        self._dashboard.sync_batch_requested.connect(self._on_sync_batch_date)
         self._dashboard.force_start_requested.connect(self._manager.force_start)
         self._dashboard.job_switched.connect(self._on_job_switched)
         self._dashboard.delete_job_requested.connect(self._on_delete_job)
@@ -513,7 +514,7 @@ class MainWindow(MSFluentWindow):
         self._manager.stop_monitoring()
         self._update_all_status_indicators()
 
-    def _on_sync_job_by_id(self, job_id: str):
+    def _on_sync_job_by_id(self, job_id: str, target_batch_date: Optional[str] = None):
         """Sync a specific job directly from the Main Dashboard card asynchronously."""
         if job_id in self._syncing_jobs:
             return
@@ -524,21 +525,23 @@ class MainWindow(MSFluentWindow):
             self._syncing_jobs.discard(job_id)
             return
 
-        self._on_log_message("INFO", f"Scanning and syncing files for '{ctrl.job.name}'...")
+        batch_info = f" for batch {target_batch_date}" if target_batch_date else ""
+        self._on_log_message("INFO", f"Scanning and syncing files for '{ctrl.job.name}'{batch_info}...")
 
         def _bg_sync():
             try:
-                ready, processing = ctrl.sync_now()
+                ready, processing = ctrl.sync_now(target_batch_date=target_batch_date)
                 waiting_or_ready = [
                     r for r in list(ctrl._active_records.values())
                     if r.status in (FileStatus.READY, FileStatus.WAITING_FOR_WINDOW, FileStatus.QUEUED, FileStatus.TRANSFERRING)
+                    and (not target_batch_date or r.batch_date == target_batch_date)
                 ]
 
                 def _finish():
                     if waiting_or_ready:
-                        self._on_log_message("SUCCESS", f"Started immediate sync transfer for '{ctrl.job.name}' ({len(waiting_or_ready)} file(s))")
+                        self._on_log_message("SUCCESS", f"Started immediate sync transfer for '{ctrl.job.name}'{batch_info} ({len(waiting_or_ready)} file(s))")
                     else:
-                        self._on_log_message("INFO", f"No new files to transfer for '{ctrl.job.name}'")
+                        self._on_log_message("INFO", f"No new files to transfer for '{ctrl.job.name}'{batch_info}")
 
                     if self._manager.current_job and self._manager.current_job.id == job_id:
                         self._dashboard.set_records(self._manager.get_all_records(job_id))
@@ -552,6 +555,15 @@ class MainWindow(MSFluentWindow):
                 QTimer.singleShot(0, lambda: self._syncing_jobs.discard(job_id))
 
         threading.Thread(target=_bg_sync, daemon=True).start()
+
+    def _on_sync_batch_date(self, target_batch_date: str):
+        """Trigger transfer specifically for files in the selected operational batch date."""
+        cur_job = self._manager.current_job
+        if not cur_job:
+            msg = MessageBox("No Job", "Please select or create a transfer job first.", self)
+            msg.exec()
+            return
+        self._on_sync_job_by_id(cur_job.id, target_batch_date=target_batch_date)
 
     def _on_sync_now(self):
         """Sync active workspace job."""

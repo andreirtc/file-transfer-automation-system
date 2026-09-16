@@ -352,6 +352,35 @@ class SettingsDialog(MessageBoxBase):
         self._zip_password.setText(config.zip_password)
         form.addRow(BodyLabel("Zip Password:", self), self._zip_password)
 
+        # Transfer Mode (Direct Raw 1:1 vs Batch ZIP Archive)
+        self._transfer_mode = ComboBox(self)
+        self._transfer_mode.addItem("Direct Stream (Raw 1:1, Robocopy-style)", userData="direct")
+        self._transfer_mode.addItem("Batch ZIP Archive", userData="zip")
+        curr_mode = getattr(config, "transfer_mode", "direct")
+        for i in range(self._transfer_mode.count()):
+            if self._transfer_mode.itemData(i) == curr_mode:
+                self._transfer_mode.setCurrentIndex(i)
+                break
+        form.addRow(BodyLabel("Transfer Mode:", self), self._transfer_mode)
+
+        # Operational Cycle Window
+        self._cycle_start = LineEdit(self)
+        self._cycle_start.setPlaceholderText("18:00")
+        self._cycle_start.setText(getattr(config, "operational_cycle_start", "18:00"))
+        form.addRow(BodyLabel("Operational Cycle Start:", self), self._cycle_start)
+
+        self._cycle_end = LineEdit(self)
+        self._cycle_end.setPlaceholderText("12:00")
+        self._cycle_end.setText(getattr(config, "operational_cycle_end", "12:00"))
+        form.addRow(BodyLabel("Operational Cycle Cut-Off:", self), self._cycle_end)
+
+        # Smart Verification
+        self._smart_verification = SwitchButton("Smart Verification", self)
+        self._smart_verification.setOnText("Enabled (Exact size + 24MB block SHA-256 for >2GB)")
+        self._smart_verification.setOffText("Disabled (Full Hash Pass)")
+        self._smart_verification.setChecked(getattr(config, "smart_verification_enabled", True))
+        form.addRow(BodyLabel("Verification Mode:", self), self._smart_verification)
+
         # Max Concurrent Job Transfers
         self._max_concurrent = ComboBox(self)
         self._max_concurrent.addItem("1 (Strictly Sequential)", userData=1)
@@ -398,6 +427,10 @@ class SettingsDialog(MessageBoxBase):
         self._config.set("auto_cleanup_days", self._auto_cleanup_days.value())
         self._config.set("batch_compression_enabled", self._batch_compression.isChecked())
         self._config.set("zip_password", self._zip_password.text())
+        self._config.set("transfer_mode", self._transfer_mode.currentData())
+        self._config.set("operational_cycle_start", self._cycle_start.text().strip() or "18:00")
+        self._config.set("operational_cycle_end", self._cycle_end.text().strip() or "12:00")
+        self._config.set("smart_verification_enabled", self._smart_verification.isChecked())
         self._config.set("max_concurrent_transfers", self._max_concurrent.currentData())
         self._config.set("transfer_threads", self._transfer_threads.currentData())
         self._config.save()

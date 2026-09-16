@@ -3,9 +3,10 @@ Dashboard widget for the File Transfer Automation System.
 """
 
 from __future__ import annotations
-from typing import Optional
+from datetime import datetime
+from typing import Optional, TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QDate
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -26,14 +27,18 @@ from qfluentwidgets import (
     StrongBodyLabel,
     BodyLabel,
     TitleLabel,
-    TitleLabel,
     SubtitleLabel,
     ComboBox,
-    ToolButton
+    ToolButton,
+    CalendarPicker,
+    SwitchButton,
 )
 
 from core.models import FileStatus, TransferJob, TransferRecord
 from gui.transfer_table import TransferTableWidget
+
+if TYPE_CHECKING:
+    from services.configuration_service import ConfigurationService
 
 
 class StatCard(SimpleCardWidget):
@@ -80,13 +85,16 @@ class DashboardWidget(QWidget):
     start_monitoring_requested = Signal()
     stop_monitoring_requested = Signal()
     sync_now_requested = Signal()
+    sync_batch_requested = Signal(str) # batch date string (YYYY-MM-DD)
     force_start_requested = Signal(str)
     job_switched = Signal(str) # job id
     delete_job_requested = Signal(str) # job id
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, config: Optional[ConfigurationService] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._config = config
         self._setup_ui()
+        self._init_batch_date()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -158,6 +166,38 @@ class DashboardWidget(QWidget):
         self._warning_layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(self._warning_layout)
         self._current_info_bar = None
+
+        # ── Target Operational Batch Controls ──
+        self._batch_card = SimpleCardWidget(self)
+        batch_layout = QHBoxLayout(self._batch_card)
+        batch_layout.setContentsMargins(16, 10, 16, 10)
+        batch_layout.setSpacing(14)
+
+        batch_layout.addWidget(StrongBodyLabel("Target Batch Date:", self._batch_card))
+
+        self._calendar_picker = CalendarPicker(self._batch_card)
+        self._calendar_picker.dateChanged.connect(self._on_batch_date_changed)
+        batch_layout.addWidget(self._calendar_picker)
+
+        self._cycle_label = BodyLabel("", self._batch_card)
+        self._cycle_label.setStyleSheet("color: #0078D4; font-weight: 500;")
+        batch_layout.addWidget(self._cycle_label)
+
+        batch_layout.addStretch(1)
+
+        self._batch_filter_switch = SwitchButton("Filter Table to Batch", self._batch_card)
+        self._batch_filter_switch.setOnText("Target Batch Only")
+        self._batch_filter_switch.setOffText("All Files")
+        self._batch_filter_switch.setChecked(False)
+        self._batch_filter_switch.checkedChanged.connect(self._on_batch_filter_toggled)
+        batch_layout.addWidget(self._batch_filter_switch)
+
+        self._btn_transfer_batch = PrimaryPushButton(FluentIcon.SEND, "Transfer Batch Files", self._batch_card)
+        self._btn_transfer_batch.setToolTip("Scan and transfer files belonging exclusively to this operational cycle")
+        self._btn_transfer_batch.clicked.connect(self._on_transfer_batch_clicked)
+        batch_layout.addWidget(self._btn_transfer_batch)
+
+        layout.addWidget(self._batch_card)
 
         # ── Transfer Table ──
         self._transfer_table = TransferTableWidget(self)
@@ -318,7 +358,59 @@ class DashboardWidget(QWidget):
     def set_records(self, records: list[TransferRecord]) -> None:
         """Replace all records in the transfer table."""
         self._transfer_table.set_records(records)
+        if hasattr(self, "_batch_filter_switch") and self._batch_filter_switch.isChecked():
+            self._transfer_table.set_batch_date_filter(self.get_selected_batch_date())
 
     @property
     def transfer_table(self) -> TransferTableWidget:
         return self._transfer_table
+
+    # ── Operational Batch Date Helpers ──
+
+    def _init_batch_date(self) -> None:
+        from services.report_service import ReportService
+        cycle_start = getattr(self._config, "operational_cycle_start", "18:00") if self._config else "18:00"
+        cycle_end = getattr(self._config, "operational_cycle_end", "12:00") if self._config else "12:00"
+        initial_date_str = ReportService.resolve_operational_batch_date(datetime.now(), cycle_start, cycle_end)
+        try:
+            qdate = QDate.fromString(initial_date_str, "yyyy-MM-dd")
+            if qdate.isValid():
+                self._calendar_picker.setDate(qdate)
+            else:
+                self._calendar_picker.setDate(QDate.currentDate())
+        except Exception:
+            self._calendar_picker.setDate(QDate.currentDate())
+        self._update_cycle_label()
+
+    def get_selected_batch_date(self) -> str:
+        try:
+            qdate = self._calendar_picker.getDate()
+            if qdate and qdate.isValid():
+                return qdate.toString("yyyy-MM-dd")
+        except Exception:
+            pass
+        return datetime.now().strftime("%Y-%m-%d")
+
+    def _update_cycle_label(self) -> None:
+        selected_date = self.get_selected_batch_date()
+        cycle_start = getattr(self._config, "operational_cycle_start", "18:00") if self._config else "18:00"
+        cycle_end = getattr(self._config, "operational_cycle_end", "12:00") if self._config else "12:00"
+        from services.report_service import ReportService
+        s_dt, e_dt = ReportService.get_cycle_range_for_date(selected_date, cycle_start, cycle_end)
+        self._cycle_label.setText(
+            f"Active Cycle: {s_dt.strftime('%Y-%m-%d %H:%M')} → {e_dt.strftime('%Y-%m-%d %H:%M')}"
+        )
+        if hasattr(self, "_batch_filter_switch") and self._batch_filter_switch.isChecked():
+            self._transfer_table.set_batch_date_filter(selected_date)
+
+    def _on_batch_date_changed(self, date) -> None:
+        self._update_cycle_label()
+
+    def _on_batch_filter_toggled(self, checked: bool) -> None:
+        if checked:
+            self._transfer_table.set_batch_date_filter(self.get_selected_batch_date())
+        else:
+            self._transfer_table.set_batch_date_filter(None)
+
+    def _on_transfer_batch_clicked(self) -> None:
+        self.sync_batch_requested.emit(self.get_selected_batch_date())

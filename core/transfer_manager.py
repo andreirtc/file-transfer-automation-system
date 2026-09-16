@@ -122,12 +122,25 @@ class TransferWorker(QThread):
             self.all_done.emit()
             return
 
-        if self._config.batch_compression_enabled and len(self._records) > 0:
+        use_zip = (
+            (self._config.batch_compression_enabled or getattr(self._config, "transfer_mode", "direct") == "zip")
+            and len(self._records) > 0
+        )
+        if use_zip:
             self._run_batch_compression()
         else:
             self._run_direct_transfers()
 
     def _run_direct_transfers(self) -> None:
+        from services.report_service import ReportService
+        cycle_start = getattr(self._config, "operational_cycle_start", "18:00")
+        cycle_end = getattr(self._config, "operational_cycle_end", "12:00")
+
+        for record in self._records:
+            if not record.batch_date:
+                file_dt = datetime.fromtimestamp(record.source_modified) if record.source_modified else datetime.now()
+                record.batch_date = ReportService.resolve_operational_batch_date(file_dt, cycle_start, cycle_end)
+
         threads = max(1, min(128, self._config.transfer_threads))
         if threads == 1 or len(self._records) <= 1:
             for record in self._records:
@@ -501,11 +514,17 @@ class TransferWorker(QThread):
                 now_dt = datetime.now()
 
                 result = TransferResult(success=True, record=first_record)
+                from services.report_service import ReportService
+                cycle_start = getattr(self._config, "operational_cycle_start", "18:00")
+                cycle_end = getattr(self._config, "operational_cycle_end", "12:00")
                 for record in valid_records:
                     record.status = FileStatus.COMPLETED
                     record.destination_path = str(target_path)
                     record.transfer_completed = now_dt
                     record.verification_passed = True
+                    if not record.batch_date:
+                        file_dt = datetime.fromtimestamp(record.source_modified) if record.source_modified else now_dt
+                        record.batch_date = ReportService.resolve_operational_batch_date(file_dt, cycle_start, cycle_end)
                 self._db.save_records_batch(valid_records)
                 for record in valid_records:
                     self.transfer_completed.emit(record.id, result)
@@ -856,6 +875,12 @@ class JobController(QObject):
             if self.job.schedule_mode == "window":
                 status = FileStatus.WAITING_FOR_WINDOW
 
+            from services.report_service import ReportService
+            c_start = getattr(self._config, "operational_cycle_start", "18:00")
+            c_end = getattr(self._config, "operational_cycle_end", "12:00")
+            file_dt = datetime.fromtimestamp(source_modified) if source_modified else datetime.now()
+            b_date = ReportService.resolve_operational_batch_date(file_dt, c_start, c_end)
+
             rec = TransferRecord(
                 job_id=self.job.id,
                 file_name=Path(file_path).name,
@@ -864,6 +889,7 @@ class JobController(QObject):
                 file_size=file_size,
                 source_modified=source_modified,
                 status=status,
+                batch_date=b_date,
             )
             self._active_records[file_path] = rec
 
@@ -1018,7 +1044,7 @@ class JobController(QObject):
                 self.enqueue_requested.emit(self.job.id, waiting)
                 self._emit_stats()
 
-    def sync_now(self) -> tuple[list[TransferRecord], list[TransferRecord]]:
+    def sync_now(self, target_batch_date: Optional[str] = None) -> tuple[list[TransferRecord], list[TransferRecord]]:
         """Manual sync scan for this job — immediately discovers and triggers transfer."""
         if not self._monitor:
             recon_interval = self._config.reconciliation_interval
@@ -1036,6 +1062,14 @@ class JobController(QObject):
         self._monitor.update_known_files()
         found_files = self._monitor.scan_folder()
 
+        from services.report_service import ReportService
+        c_start = getattr(self._config, "operational_cycle_start", "18:00")
+        c_end = getattr(self._config, "operational_cycle_end", "12:00")
+
+        start_dt, end_dt = None, None
+        if target_batch_date:
+            start_dt, end_dt = ReportService.get_cycle_range_for_date(target_batch_date, c_start, c_end)
+
         batch_new = []
         for fpath in found_files:
             try:
@@ -1047,8 +1081,16 @@ class JobController(QObject):
             except OSError:
                 continue
 
+            file_dt = datetime.fromtimestamp(mtime)
+            # If a specific batch date is targeted, only include files falling within its operational cycle
+            if start_dt and end_dt:
+                if not (start_dt <= file_dt <= end_dt):
+                    continue
+
             if self._db.check_already_transferred(self.job.id, fpath, fsize, mtime):
                 continue
+
+            assigned_bdate = target_batch_date or ReportService.resolve_operational_batch_date(file_dt, c_start, c_end)
 
             if fpath not in self._active_records:
                 rec = TransferRecord(
@@ -1060,9 +1102,17 @@ class JobController(QObject):
                     source_modified=mtime,
                     status=FileStatus.READY,
                     override_window=True,
+                    batch_date=assigned_bdate,
                 )
                 self._active_records[fpath] = rec
                 batch_new.append(rec)
+            else:
+                rec = self._active_records[fpath]
+                rec.batch_date = assigned_bdate
+                if rec.status not in (FileStatus.COMPLETED, FileStatus.SKIPPED):
+                    rec.status = FileStatus.READY
+                    rec.override_window = True
+                    batch_new.append(rec)
 
         if batch_new:
             self._db.save_records_batch(batch_new)
@@ -1079,6 +1129,14 @@ class JobController(QObject):
 
             # Recover any non-finished file (including interrupted TRANSFERRING, QUEUED, or FAILED)
             if rec.status not in (FileStatus.COMPLETED, FileStatus.SKIPPED):
+                if target_batch_date:
+                    rec_bdate = rec.batch_date
+                    if not rec_bdate:
+                        f_dt = datetime.fromtimestamp(rec.source_modified) if rec.source_modified else datetime.now()
+                        rec_bdate = ReportService.resolve_operational_batch_date(f_dt, c_start, c_end)
+                    if rec_bdate != target_batch_date:
+                        continue
+                    rec.batch_date = target_batch_date
                 rec.override_window = True
                 rec.status = FileStatus.READY
                 ready.append(rec)
@@ -1435,6 +1493,13 @@ class TransferManager(QObject):
 
     def get_controller(self, job_id: str) -> Optional[JobController]:
         return self._controllers.get(job_id)
+
+    def sync_job(self, job_id: str, target_batch_date: Optional[str] = None) -> tuple[list[TransferRecord], list[TransferRecord]]:
+        """Trigger immediate sync scan and transfer for a specific job."""
+        ctrl = self.get_controller(job_id)
+        if ctrl:
+            return ctrl.sync_now(target_batch_date=target_batch_date)
+        return [], []
 
     @property
     def current_job(self) -> Optional[TransferJob]:
