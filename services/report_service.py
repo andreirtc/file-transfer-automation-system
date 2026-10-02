@@ -112,6 +112,8 @@ class ReportService:
         try:
             sh, sm = map(int, cycle_start_str.split(":"))
             eh, em = map(int, cycle_end_str.split(":"))
+            dtime(sh, sm)
+            dtime(eh, em)
         except Exception:
             sh, sm = 18, 0
             eh, em = 12, 0
@@ -268,6 +270,9 @@ class ReportService:
                         FileStatus.READY,
                         FileStatus.WAITING_FOR_WINDOW,
                         FileStatus.DETECTED,
+                        FileStatus.PROCESSING,
+                        FileStatus.VERIFYING,
+                        FileStatus.CONFLICT,
                     )
                 ]
 
@@ -309,7 +314,7 @@ class ReportService:
                 elif failed_recs and completed_recs:
                     status_val = "Failed"
                 elif completed_recs:
-                    status_val = "Verified"
+                    status_val = "Verified" if all(r.verification_passed is True for r in completed_recs) else "Pending"
                 elif all(r.status == FileStatus.SKIPPED for r in sys_records):
                     status_val = "Not Applicable"
                 else:
@@ -319,8 +324,10 @@ class ReportService:
                 if completed_recs:
                     if any(r.verification_passed is False for r in completed_recs):
                         integrity_val = "Failed"
-                    else:
+                    elif all(r.verification_passed is True for r in completed_recs):
                         integrity_val = "Passed"
+                    else:
+                        integrity_val = "Not Applicable"
                 elif failed_recs:
                     integrity_val = "Failed"
                 else:
@@ -412,8 +419,11 @@ class ReportService:
             all_exist = True
             checked_dirs: dict[str, bool] = {}
             # Verify parent destination directories exist, and sample up to 5 most recent files
-            sample_recs = completed_records[-5:] if len(completed_records) > 5 else completed_records
+            sample_recs = completed_records
             for r in sample_recs:
+                if not r.destination_path:
+                    all_exist = False
+                    break
                 if r.destination_path:
                     try:
                         p = Path(r.destination_path)
@@ -439,7 +449,7 @@ class ReportService:
             c1_rem = "Awaiting scheduled backup execution."
 
         # 2. Backup job completed successfully without critical errors
-        if completed_records and not failed_records:
+        if table_rows and all(r["verification_status"] in ("Verified", "Not Applicable") for r in table_rows) and not failed_records:
             c2_res = "Yes"
             c2_rem = "All jobs completed with 0 critical errors."
         elif failed_records:
@@ -455,29 +465,29 @@ class ReportService:
         # 3. File size is within expected range
         if completed_records:
             zero_byte = any(r.file_size <= 0 for r in completed_records)
-            c3_res = "No" if zero_byte else "Yes"
-            c3_rem = "Zero-byte file detected." if zero_byte else "All backup files have valid non-zero sizes."
+            c3_res = "No" if zero_byte else "Pending"
+            c3_rem = "Zero-byte file detected." if zero_byte else "Non-zero sizes recorded; operator must compare against expected backup sizes."
         else:
             c3_res = "Pending"
             c3_rem = "Awaiting file transfers."
 
         # 4. Filename follows approved naming convention
         if completed_records:
-            c4_res = "Yes"
-            c4_rem = "Naming conventions strictly adhere to TFSPH standard."
+            c4_res = "Pending"
+            c4_rem = "Operator must confirm actual filenames against approved naming conventions."
         else:
             c4_res = "Pending"
             c4_rem = "Awaiting file generation."
 
         # 5. Backup archive is accessible and integrity check passed
         if completed_records:
-            integrity_failures = [r for r in completed_records if r.verification_passed is False]
+            integrity_failures = [r for r in completed_records if r.verification_passed is not True]
             if integrity_failures:
                 c5_res = "No"
                 c5_rem = f"{len(integrity_failures)} file(s) failed SHA-256 hash check."
             else:
                 c5_res = "Yes"
-                c5_rem = "SHA-256 cryptographic verification passed 100%."
+                c5_rem = "Recorded transfer verification passed; smart mode may use sampled hashes for large direct files."
         elif failed_records:
             c5_res = "No"
             c5_rem = "Transfer failed prior to integrity verification."
@@ -506,13 +516,13 @@ class ReportService:
                 c6_res = "No"
                 c6_rem = f"Low repository disk space: {free_space_gb:.1f} GB free."
         else:
-            c6_res = "Yes"
-            c6_rem = "Repository accessibility confirmed."
+            c6_res = "Pending"
+            c6_rem = "Repository capacity could not be checked; operator confirmation required."
 
         # 7. Any failed or missed backup was escalated and documented
         if failed_records:
-            c7_res = "Yes"
-            c7_rem = f"Documented {len(failed_records)} exception(s) in checklist."
+            c7_res = "Pending"
+            c7_rem = f"Logged {len(failed_records)} exception(s); operator must confirm escalation to IT."
         elif completed_records:
             c7_res = "Not Applicable"
             c7_rem = "No backup failures or exceptions encountered."

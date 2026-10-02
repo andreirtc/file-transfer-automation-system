@@ -491,13 +491,16 @@ class ReportPageWidget(QWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.Interactive)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(9, QHeaderView.Stretch)
+        header.setSectionResizeMode(9, QHeaderView.Interactive)
+        self._table.setColumnWidth(3, 190)
+        self._table.setColumnWidth(4, 220)
+        self._table.setColumnWidth(9, 280)
         self._table.setMinimumHeight(280)
 
         card_layout.addWidget(self._table)
@@ -670,6 +673,12 @@ class ReportPageWidget(QWidget):
 
             # 9: Remarks
             self._table.setItem(r_idx, 9, QTableWidgetItem(r_data["remarks"]))
+
+        for row in range(self._table.rowCount()):
+            for column in range(self._table.columnCount()):
+                item = self._table.item(row, column)
+                if item:
+                    item.setToolTip(item.text())
 
         # Update Stat Cards
         self._card_total._val_label.setText(str(len(rows)))

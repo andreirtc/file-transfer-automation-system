@@ -13,16 +13,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PySide6.QtWidgets import QApplication
-
-from gui.main_window import MainWindow
-from services.configuration_service import ConfigurationService
-from services.database_service import DatabaseService
-from services.logging_service import setup_logging
 
 
 def main():
     """Application entry point."""
+    from PySide6.QtWidgets import QApplication
+
+    from gui.main_window import MainWindow
+    from services.configuration_service import ConfigurationService
+    from services.database_service import DatabaseService
+    from services.logging_service import setup_logging
+
     # Initialize logging first
     setup_logging()
 
@@ -81,7 +82,13 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2 and sys.argv[1] == "--compression-worker":
+    if len(sys.argv) > 2 and sys.argv[1] in {"--performance-setup", "--performance-configure", "--performance-run"}:
+        from core.performance_lab import run_cli
+        sys.exit(run_cli(sys.argv[1], sys.argv[2]))
+    elif len(sys.argv) > 2 and sys.argv[1] in {"--demo-setup", "--demo-grow", "--demo-verify", "--demo-verify-first"}:
+        from core.demo_lab import run_cli
+        sys.exit(run_cli(sys.argv[1], sys.argv[2]))
+    elif len(sys.argv) > 2 and sys.argv[1] == "--compression-worker":
         from core.compression_worker import compress_files
         import json
         config_path = sys.argv[2]

@@ -54,6 +54,19 @@ class TestTransferEngine:
         assert record.source_hash == record.destination_hash
         assert record.verification_passed is True
 
+    @pytest.mark.parametrize('size', [0, 1, 1024 * 1024 * 2 + 17])
+    def test_reused_buffer_preserves_partial_final_chunk(self, ready_engine, tmp_source_dir, tmp_dest_dir, size):
+        source = tmp_source_dir / 'partial.bin'
+        payload = bytes(range(256)) * (size // 256) + bytes(range(size % 256))
+        source.write_bytes(payload)
+        destination = tmp_dest_dir / source.name
+        progress = []
+        ready_engine._copy_with_progress(source, destination, lambda phase, current, total: progress.append((current, total)))
+        assert destination.read_bytes() == payload
+        assert destination.stat().st_size == size
+        if size:
+            assert progress[-1] == (size, size)
+
     def test_source_remains_after_transfer(self, ready_engine, sample_file, tmp_dest_dir):
         """Source file must remain untouched after transfer (COPY, not MOVE)."""
         original_content = sample_file.read_bytes()

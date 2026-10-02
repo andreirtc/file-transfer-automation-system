@@ -171,6 +171,11 @@ class TestBacklogTargetBatchSync:
 
         ctrl = JobController(job, config, db)
 
+        ctrl._safety._stability_interval = 0
+        ready, processing = ctrl.sync_now(target_batch_date="2026-09-15")
+        assert not ready
+        assert len(processing) == 2  # A new file must first pass stability checks.
+        ctrl.sync_now(target_batch_date="2026-09-15")
         ready, _ = ctrl.sync_now(target_batch_date="2026-09-15")
 
         ready_names = [r.file_name for r in ready]

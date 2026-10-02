@@ -313,6 +313,11 @@ def test_window_end_batch_transfer_execution(tmp_source_dir, tmp_dest_dir, test_
     ctrl = manager.get_controller(job.id)
     assert ctrl is not None
 
+    # Window dispatch requires established stability, even for a waiting record.
+    ctrl._safety._stability_interval = 0
+    for _ in range(3):
+        ctrl._safety.check_file(src)
+
     # Trigger window check (simulates timer tick at window_end)
     ctrl._check_windows()
 
@@ -852,7 +857,12 @@ def test_pause_and_sync_now_recovers_interrupted_files(tmp_path, test_db, config
     # User deletes f2 on disk
     f2.unlink()
 
-    # User hits Sync Now
+    # User hits Sync Now; interrupted files still need stability verification.
+    ctrl._safety._stability_interval = 0
+    ready, processing = ctrl.sync_now()
+    assert not ready
+    assert [r.file_name for r in processing] == ["file1.txt"]
+    ctrl.sync_now()
     ready, _ = ctrl.sync_now()
 
     # Only file1 should be ready and enqueued, file2 marked skipped
@@ -1041,6 +1051,13 @@ def test_synchronized_window_triggers_strict_alphabetical_order(tmp_path, test_d
     # Let monitor initial scan finish
     time.sleep(0.2)
     qapp.processEvents()
+
+    # Make the files genuinely stable before testing dispatch order.
+    for ctrl in manager._controllers.values():
+        ctrl._safety._stability_interval = 0
+        for path in ctrl._monitor.scan_folder():
+            for _ in range(3):
+                ctrl._safety.check_file(path)
 
     # Call _check_all_windows to trigger the window
     manager._check_all_windows()

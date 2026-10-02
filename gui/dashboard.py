@@ -14,6 +14,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QVBoxLayout,
     QWidget,
+    QScrollArea,
+    QFrame,
+    QSizePolicy,
+    QLayout,
 )
 
 from qfluentwidgets import (
@@ -58,7 +62,7 @@ class StatCard(SimpleCardWidget):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(4)
 
         self._count_label = TitleLabel("0", self)
@@ -98,9 +102,22 @@ class DashboardWidget(QWidget):
         self._init_batch_date()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        root_layout = QVBoxLayout(self)
+        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(16, 12, 16, 12)
+        # Keep actions/table outside the scrollable summary. Short windows must
+        # scroll job details rather than compress controls or hide the footer.
+        self._summary_scroll = QScrollArea(self)
+        self._summary_scroll.setWidgetResizable(True)
+        self._summary_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._summary_content = QWidget()
+        self._summary_scroll.setWidget(self._summary_content)
+        layout = QVBoxLayout(self._summary_content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        root_layout.addWidget(self._summary_scroll)
 
         # ── Job Info Panel ──
         self._job_group = SimpleCardWidget(self)
@@ -113,6 +130,8 @@ class DashboardWidget(QWidget):
         job_combo_layout = QHBoxLayout()
         self.job_combo = ComboBox(self._job_group)
         self.job_combo.setMinimumWidth(200)
+        self.job_combo.setFixedHeight(32)
+        self._job_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.job_combo.currentIndexChanged.connect(self._on_job_combo_changed)
         job_combo_layout.addWidget(self.job_combo)
         
@@ -126,22 +145,28 @@ class DashboardWidget(QWidget):
 
         job_layout.addWidget(StrongBodyLabel("Source:", self._job_group), 1, 0)
         self._source_label = BodyLabel("—", self._job_group)
+        self._source_label.setWordWrap(True)
+        self._source_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         job_layout.addWidget(self._source_label, 1, 1)
 
         job_layout.addWidget(StrongBodyLabel("Destination:", self._job_group), 2, 0)
         self._dest_label = BodyLabel("—", self._job_group)
+        self._dest_label.setWordWrap(True)
+        self._dest_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         job_layout.addWidget(self._dest_label, 2, 1)
 
-        job_layout.addWidget(StrongBodyLabel("Monitoring:", self._job_group), 3, 0)
+        job_combo_layout.addWidget(StrongBodyLabel("Monitoring:", self._job_group))
         self._monitor_status_label = BodyLabel("OFF", self._job_group)
         self._monitor_status_label.setStyleSheet("color: #C42B1C; font-weight: bold;")
-        job_layout.addWidget(self._monitor_status_label, 3, 1)
+        self._monitor_status_label.setWordWrap(True)
+        job_combo_layout.addWidget(self._monitor_status_label)
 
         layout.addWidget(self._job_group)
 
         # ── Statistics Cards ──
-        stats_layout = QHBoxLayout()
-        stats_layout.setSpacing(12)
+        stats_layout = QGridLayout()
+        self._stats_layout = stats_layout
+        stats_layout.setSpacing(8)
 
         self._stat_cards: dict[str, StatCard] = {}
         card_configs = [
@@ -158,7 +183,7 @@ class DashboardWidget(QWidget):
         for key, label, color in card_configs:
             card = StatCard(label, color, self)
             self._stat_cards[key] = card
-            stats_layout.addWidget(card)
+            stats_layout.addWidget(card, 0, len(self._stat_cards) - 1)
 
         layout.addLayout(stats_layout)
 
@@ -170,8 +195,10 @@ class DashboardWidget(QWidget):
 
         # ── Target Operational Batch Controls ──
         self._batch_card = SimpleCardWidget(self)
-        batch_layout = QHBoxLayout(self._batch_card)
-        batch_layout.setContentsMargins(16, 10, 16, 10)
+        batch_container = QVBoxLayout(self._batch_card)
+        batch_container.setContentsMargins(16, 10, 16, 10)
+        batch_layout = QHBoxLayout()
+        batch_container.addLayout(batch_layout)
         batch_layout.setSpacing(14)
 
         batch_layout.addWidget(StrongBodyLabel("Target Batch Date:", self._batch_card))
@@ -188,6 +215,10 @@ class DashboardWidget(QWidget):
         self._btn_cycle_settings.setToolTip("Configure Operational Cycle Hours (Settings)")
         self._btn_cycle_settings.clicked.connect(self.configure_cycle_requested.emit)
         batch_layout.addWidget(self._btn_cycle_settings)
+
+        self._cycle_label.setWordWrap(True)
+        batch_layout = QHBoxLayout()
+        batch_container.addLayout(batch_layout)
 
         self._batch_count_badge = BodyLabel("", self._batch_card)
         self._batch_count_badge.setStyleSheet("color: #797775; font-size: 12px; font-weight: 500;")
@@ -213,12 +244,12 @@ class DashboardWidget(QWidget):
         self._btn_transfer_batch.clicked.connect(self._on_transfer_batch_clicked)
         batch_layout.addWidget(self._btn_transfer_batch)
 
-        layout.addWidget(self._batch_card)
+        root_layout.addWidget(self._batch_card)
 
         # ── Transfer Table ──
         self._transfer_table = TransferTableWidget(self)
         self._transfer_table.force_start_requested.connect(self.force_start_requested)
-        layout.addWidget(self._transfer_table, stretch=1)
+        self._transfer_table.setMinimumHeight(220)
 
         # ── Control Buttons ──
         controls = QHBoxLayout()
@@ -235,11 +266,25 @@ class DashboardWidget(QWidget):
 
         controls.addStretch()
 
-        self._btn_sync = PrimaryPushButton(FluentIcon.SYNC, "SYNC NOW", self)
+        self._btn_sync = PrimaryPushButton(FluentIcon.SYNC, "Sync All Dates", self)
+        self._btn_sync.setToolTip("Request all untransferred files for this job, across every batch date; stability checks still apply")
         self._btn_sync.clicked.connect(self.sync_now_requested)
         controls.addWidget(self._btn_sync)
 
-        layout.addLayout(controls)
+        root_layout.addLayout(controls)
+        root_layout.addWidget(self._transfer_table, stretch=1)
+        for button in (self._btn_start, self._btn_stop, self._btn_sync):
+            button.setMinimumHeight(32)
+            button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._summary_scroll.setMaximumHeight(max(100, int(self.height() * .32)))
+        columns = 4 if self.width() < 1050 else 8
+        if getattr(self, "_stat_columns", None) != columns:
+            self._stat_columns = columns
+            for index, card in enumerate(self._stat_cards.values()):
+                self._stats_layout.addWidget(card, index // columns, index % columns)
 
     # ── Public update methods ──
 
@@ -279,6 +324,11 @@ class DashboardWidget(QWidget):
                     self.job_combo.setCurrentIndex(idx)
                     
         self.job_combo.blockSignals(False)
+        has_job = bool(jobs)
+        self.btn_delete_job.setEnabled(has_job)
+        self._btn_start.setEnabled(has_job)
+        self._btn_sync.setEnabled(has_job)
+        self._btn_transfer_batch.setEnabled(has_job)
 
     def _on_job_combo_changed(self, index: int) -> None:
         job_id = self.job_combo.currentData()
@@ -369,11 +419,14 @@ class DashboardWidget(QWidget):
 
     def update_record(self, record: TransferRecord) -> None:
         """Update a single record in the transfer table."""
+        self._resolve_legacy_batch(record)
         self._transfer_table.update_record(record)
         self._update_batch_feedback()
 
     def set_records(self, records: list[TransferRecord]) -> None:
         """Replace all records in the transfer table."""
+        for record in records:
+            self._resolve_legacy_batch(record)
         self._transfer_table.set_records(records)
         if hasattr(self, "_batch_filter_switch") and self._batch_filter_switch.isChecked():
             self._transfer_table.set_batch_date_filter(self.get_selected_batch_date())
@@ -490,3 +543,12 @@ class DashboardWidget(QWidget):
 
     def _on_transfer_batch_clicked(self) -> None:
         self.sync_batch_requested.emit(self.get_selected_batch_date())
+
+    def _resolve_legacy_batch(self, record):
+        if not record.batch_date:
+            from services.report_service import ReportService
+            dt = datetime.fromtimestamp(record.source_modified) if record.source_modified is not None else (record.transfer_completed or record.detected_at)
+            if dt:
+                record.batch_date = ReportService.resolve_operational_batch_date(
+                    dt, getattr(self._config, "operational_cycle_start", "18:00"),
+                    getattr(self._config, "operational_cycle_end", "12:00"))

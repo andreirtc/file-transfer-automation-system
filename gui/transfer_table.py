@@ -223,11 +223,11 @@ class TransferFilterProxyModel(QSortFilterProxyModel):
 
     def set_status_filter(self, status: str) -> None:
         self._status_filter = status
-        self.invalidateFilter()
+        self.invalidate()
 
     def set_batch_date_filter(self, batch_date: Optional[str]) -> None:
         self._batch_date_filter = batch_date
-        self.invalidateFilter()
+        self.invalidate()
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex = QModelIndex()) -> bool:
         model: TransferTableModel = self.sourceModel()

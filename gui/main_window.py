@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QWidget
 
@@ -57,6 +57,8 @@ class MainWindow(MSFluentWindow):
     All enabled jobs run concurrently in the background.
     """
 
+    sync_finished = Signal(str, str, str)
+
     def __init__(
         self,
         config: ConfigurationService,
@@ -70,6 +72,7 @@ class MainWindow(MSFluentWindow):
         # Create the central multi-job transfer manager
         self._manager = TransferManager(config, db, self)
         self._syncing_jobs: set[str] = set()
+        self.sync_finished.connect(self._on_sync_finished)
 
         # Setup Window
         self.setWindowTitle("File Transfer Automation System")
@@ -116,7 +119,7 @@ class MainWindow(MSFluentWindow):
         self.addSubInterface(
             self._main_dashboard,
             FluentIcon.HOME,
-            "Main Dashboard",
+            "Dashboard",
             position=NavigationItemPosition.TOP,
         )
 
@@ -124,7 +127,7 @@ class MainWindow(MSFluentWindow):
         self.addSubInterface(
             self._dashboard,
             FluentIcon.FOLDER,
-            "Job Workspace",
+            "Workspace",
             position=NavigationItemPosition.TOP,
         )
 
@@ -132,7 +135,7 @@ class MainWindow(MSFluentWindow):
         self.addSubInterface(
             self._report_page,
             FluentIcon.DOCUMENT,
-            "Daily Report",
+            "Report",
             position=NavigationItemPosition.TOP,
         )
 
@@ -156,7 +159,7 @@ class MainWindow(MSFluentWindow):
         self.navigationInterface.addItem(
             routeKey="history",
             icon=FluentIcon.HISTORY,
-            text="Transfer History",
+            text="History",
             onClick=self._on_view_history,
             position=NavigationItemPosition.SCROLL,
         )
@@ -165,7 +168,7 @@ class MainWindow(MSFluentWindow):
         self.navigationInterface.addItem(
             routeKey="logs",
             icon=FluentIcon.CODE,
-            text="View Logs",
+            text="Logs",
             onClick=self._on_view_logs,
             position=NavigationItemPosition.BOTTOM,
         )
@@ -181,7 +184,7 @@ class MainWindow(MSFluentWindow):
         self.addSubInterface(
             self._docs_page,
             FluentIcon.BOOK_SHELF,
-            "Documentation",
+            "Guide",
             position=NavigationItemPosition.BOTTOM,
         )
 
@@ -299,6 +302,13 @@ class MainWindow(MSFluentWindow):
                 stats = self._db.get_statistics(current_job.id)
                 self._dashboard.update_statistics(stats)
 
+        if not jobs:
+            self._dashboard.update_job_list([], None)
+            self._dashboard.update_job_info(None)
+            self._dashboard.update_statistics({})
+            self._dashboard.set_records([])
+            self._dashboard.update_monitoring_status(False)
+            self._dashboard._btn_start.setEnabled(False)
         self._update_all_status_indicators()
         self._schedule_report_refresh()
 
@@ -390,11 +400,12 @@ class MainWindow(MSFluentWindow):
             self._dashboard.set_records([])
 
             # Automatically start monitoring for this job
-            self._manager.start_job_monitoring(job.id)
+            if job.enabled and job.auto_monitor:
+                self._manager.start_job_monitoring(job.id)
             self._refresh_all_ui(active_job_id=job.id)
 
             logger.info("Created new job: '%s'", job.name)
-            self._on_log_message("SUCCESS", f"Job '{job.name}' created and monitoring started")
+            self._on_log_message("SUCCESS", f"Job '{job.name}' created")
 
     def _on_edit_job(self):
         """Edit currently active job and restart monitoring on Save."""
@@ -407,6 +418,9 @@ class MainWindow(MSFluentWindow):
 
     def _on_edit_job_by_id(self, job_id: str):
         """Edit specified job and automatically start monitoring on Save."""
+        if job_id in self._manager._active_workers or job_id in self._syncing_jobs:
+            self._on_log_message("WARNING", "Wait for this job to finish before editing or deleting it.")
+            return
         job = self._db.get_job(job_id)
         if not job:
             return
@@ -422,7 +436,8 @@ class MainWindow(MSFluentWindow):
             self._dashboard.update_job_info(updated_job)
 
             # Automatically start monitoring on Save
-            self._manager.start_job_monitoring(updated_job.id)
+            if updated_job.enabled and updated_job.auto_monitor:
+                self._manager.start_job_monitoring(updated_job.id)
 
             records = self._manager.get_history(job_id=updated_job.id, limit=100)
             active = self._manager.get_all_records(job_id=updated_job.id)
@@ -433,7 +448,7 @@ class MainWindow(MSFluentWindow):
             self._refresh_all_ui(active_job_id=updated_job.id)
 
             logger.info("Updated job: '%s'", updated_job.name)
-            self._on_log_message("SUCCESS", f"Job '{updated_job.name}' saved and monitoring started")
+            self._on_log_message("SUCCESS", f"Job '{updated_job.name}' saved")
 
     def _on_job_switched(self, job_id: str):
         """Handle switching the active job view in the workspace."""
@@ -454,6 +469,9 @@ class MainWindow(MSFluentWindow):
         self._refresh_all_ui(active_job_id=job.id)
 
     def _on_delete_job(self, job_id: str):
+        if job_id in self._manager._active_workers or job_id in self._syncing_jobs:
+            self._on_log_message("WARNING", "Wait for this job to finish before editing or deleting it.")
+            return
         job = self._db.get_job(job_id)
         job_name = job.name if job else "this job"
 
@@ -492,6 +510,11 @@ class MainWindow(MSFluentWindow):
 
     def _on_reset_job(self, job_id: str):
         """Reset an individual job's status and history."""
+        if self._manager._active_workers or self._syncing_jobs:
+            self._on_log_message("WARNING", "Wait for transfers and scans to finish before resetting history.")
+            return
+        if not MessageBox("Reset Job History", "This clears duplicate tracking and history. Existing source files can be transferred again. Continue?", self).exec():
+            return
         self._manager.reset_job(job_id)
         self._main_dashboard.reset_job_card(job_id)
         self._refresh_all_ui(active_job_id=job_id)
@@ -499,6 +522,11 @@ class MainWindow(MSFluentWindow):
 
     def _on_reset_all(self):
         """Reset all jobs and clear history."""
+        if self._manager._active_workers or self._syncing_jobs:
+            self._on_log_message("WARNING", "Wait for transfers and scans to finish before resetting history.")
+            return
+        if not MessageBox("Reset All History", "This clears history for every job. Existing source files can be transferred again. Continue?", self).exec():
+            return
         self._manager.reset_all_jobs()
         self._main_dashboard.reset_all_cards()
         self._refresh_all_ui()
@@ -520,6 +548,9 @@ class MainWindow(MSFluentWindow):
 
     def _on_sync_job_by_id(self, job_id: str, target_batch_date: Optional[str] = None):
         """Sync a specific job directly from the Main Dashboard card asynchronously."""
+        if job_id in self._manager._active_workers:
+            self._on_log_message("INFO", "This job is still transferring. Wait for it to finish before requesting another sync.")
+            return
         if job_id in self._syncing_jobs:
             return
         self._syncing_jobs.add(job_id)
@@ -531,34 +562,49 @@ class MainWindow(MSFluentWindow):
 
         batch_info = f" for batch {target_batch_date}" if target_batch_date else ""
         self._on_log_message("INFO", f"Scanning and syncing files for '{ctrl.job.name}'{batch_info}...")
+        # Keep checking requested files even when ordinary monitoring is stopped.
+        ctrl._safety_timer.start(max(1, self._config.stability_check_interval) * 1000)
 
         def _bg_sync():
             try:
                 ready, processing = ctrl.sync_now(target_batch_date=target_batch_date)
-                waiting_or_ready = [
-                    r for r in list(ctrl._active_records.values())
-                    if r.status in (FileStatus.READY, FileStatus.WAITING_FOR_WINDOW, FileStatus.QUEUED, FileStatus.TRANSFERRING)
-                    and (not target_batch_date or r.batch_date == target_batch_date)
-                ]
-
-                def _finish():
-                    if waiting_or_ready:
-                        self._on_log_message("SUCCESS", f"Started immediate sync transfer for '{ctrl.job.name}'{batch_info} ({len(waiting_or_ready)} file(s))")
-                    else:
-                        self._on_log_message("INFO", f"No new files to transfer for '{ctrl.job.name}'{batch_info}")
-
-                    if self._manager.current_job and self._manager.current_job.id == job_id:
-                        self._dashboard.set_records(self._manager.get_all_records(job_id))
-
-                    self._refresh_all_ui()
-                    self._syncing_jobs.discard(job_id)
-
-                QTimer.singleShot(0, _finish)
+                summary = ctrl.last_sync_summary
+                duplicates = summary["already_transferred"]
+                message = (f"Sync requested for '{ctrl.job.name}'{batch_info}: "
+                           f"{len(ready)} ready, {len(processing)} awaiting stability checks.")
+                if duplicates:
+                    message += f" {duplicates} file(s) already transferred; unchanged files were skipped using saved history."
+                if summary["in_progress"]:
+                    message += f" {summary['in_progress']} file(s) already queued, transferring or awaiting a conflict choice."
+                if not summary["matched"]:
+                    message += " No source files match this batch." if target_batch_date else " No source files found."
+                elif not ready and not processing and duplicates == summary["matched"]:
+                    message += " Nothing new to transfer."
+                if summary["unreadable"]:
+                    message += f" {summary['unreadable']} source file(s) could not be read during the scan."
+                self.sync_finished.emit(job_id, "INFO", message)
             except Exception as e:
                 logger.error("Background sync error for %s: %s", job_id, e)
-                QTimer.singleShot(0, lambda: self._syncing_jobs.discard(job_id))
+                self.sync_finished.emit(job_id, "ERROR", f"Sync failed for '{ctrl.job.name}': {e}")
 
         threading.Thread(target=_bg_sync, daemon=True).start()
+
+    @Slot(str, str, str)
+    def _on_sync_finished(self, job_id: str, level: str, message: str):
+        self._syncing_jobs.discard(job_id)
+        self._on_log_message(level, message)
+        if level == "INFO":
+            InfoBar.info(
+                title="Sync scan finished", content=message,
+                orient=Qt.Orientation.Vertical, isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT, duration=10000, parent=self,
+            )
+        if self._manager.current_job and self._manager.current_job.id == job_id:
+            history = self._manager.get_history(job_id=job_id, limit=100)
+            merged = {r.id: r for r in history}
+            merged.update({r.id: r for r in self._manager.get_all_records(job_id)})
+            self._dashboard.set_records(list(merged.values()))
+        self._refresh_all_ui()
 
     def _on_sync_batch_date(self, target_batch_date: str):
         """Trigger transfer specifically for files in the selected operational batch date."""
@@ -625,7 +671,11 @@ class MainWindow(MSFluentWindow):
             self._dashboard.update_record(record)
             job = self._db.get_job(record.job_id)
             job_name = job.name if job else "Job"
-            if result.success:
+            if record.status == FileStatus.SKIPPED:
+                self._on_log_message("INFO", f"[{job_name}] Skipped: {record.file_name}")
+            elif record.status == FileStatus.PROCESSING:
+                self._on_log_message("INFO", f"[{job_name}] Awaiting file stability: {record.file_name}")
+            elif result.success:
                 self._on_log_message("SUCCESS", f"[{job_name}] Transferred: {record.file_name}")
             else:
                 self._on_log_message("ERROR", f"[{job_name}] Failed: {record.file_name} — {result.error_message}")
@@ -657,6 +707,15 @@ class MainWindow(MSFluentWindow):
         self._schedule_report_refresh()
 
     def _on_job_transfer_completed(self, job_id: str, record_id: str, result: TransferResult):
+        if result.destination_already_matched and result.record:
+            ctrl = self._manager.get_controller(job_id)
+            name = ctrl.job.name if ctrl else "Job"
+            message = f"[{name}] {result.record.file_name}: destination already matches the source. Verified without copying again."
+            self._on_log_message("INFO", message)
+            InfoBar.info(title="Matching file already exists", content=message,
+                         orient=Qt.Orientation.Vertical,
+                         isClosable=True, position=InfoBarPosition.TOP_RIGHT,
+                         duration=10000, parent=self)
         self._main_dashboard.update_job_status(job_id, self._manager.get_job_execution_state(job_id))
         self._schedule_report_refresh()
 
@@ -709,6 +768,19 @@ class MainWindow(MSFluentWindow):
 
     def closeEvent(self, event: QCloseEvent):
         """Clean shutdown when the window is closed."""
+        if self._manager._active_workers or self._syncing_jobs:
+            event.ignore()
+            self._manager.shutdown()
+            if not hasattr(self, "_close_wait_timer"):
+                self._close_wait_timer = QTimer(self)
+                self._close_wait_timer.timeout.connect(self._close_when_idle)
+                self._close_wait_timer.start(250)
+            return
         self._manager.shutdown()
         logger.info("Application closing")
         event.accept()
+
+    def _close_when_idle(self):
+        if not self._manager._active_workers and not self._syncing_jobs:
+            self._close_wait_timer.stop()
+            self.close()

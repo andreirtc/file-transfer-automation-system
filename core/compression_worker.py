@@ -104,52 +104,18 @@ def compress_files(
                 on_progress(i + 1)
         return True
 
-    # Try pyzipper AESZipFile first for high-speed Zip64 encryption
-    try:
-        import pyzipper
-        pwd_bytes = pwd.encode("utf-8") if isinstance(pwd, str) else pwd
-        with pyzipper.AESZipFile(
-            zip_path,
-            "w",
-            compression=pyzipper.ZIP_DEFLATED,
-            compresslevel=compression_level,
-            encryption=pyzipper.WZ_AES,
-            allowZip64=True,
-        ) as zf:
-            zf.setpassword(pwd_bytes)
-            for i, sp in enumerate(norm_srcs):
-                if not os.path.exists(sp):
-                    continue
-                prefix = norm_prefixes[i] if i < len(norm_prefixes) else ""
-                arcname = os.path.join(prefix, os.path.basename(sp)).replace("\\", "/") if prefix else os.path.basename(sp)
-                _stream_write_file(zf, sp, arcname, on_bytes_written)
-                on_progress(i + 1)
-        return True
-    except Exception as e:
-        sys.stderr.write(f"pyzipper warning: {e}, falling back to secondary engine\n")
-
-    # pyminizip has a hard 32-bit integer limit (max 2-4 GB). Skip it for huge files or archives >= 2 GB.
-    has_large_file = any(os.path.exists(p) and os.path.getsize(p) >= (2 * 1024 * 1024 * 1024) for p in norm_srcs)
-    if not has_large_file and total_bytes < (2 * 1024 * 1024 * 1024):
-        try:
-            import pyminizip
-            pyminizip.compress_multiple(
-                norm_srcs,
-                norm_prefixes,
-                zip_path,
-                pwd,
-                compression_level,
-                on_progress,
-            )
-            return True
-        except Exception as e:
-            sys.stderr.write(f"pyminizip warning: {e}, falling back to zipfile\n")
-
-    import zipfile
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=compression_level, allowZip64=True) as zf:
+    # A requested password must never silently degrade to unencrypted output.
+    import pyzipper
+    pwd_bytes = pwd.encode("utf-8") if isinstance(pwd, str) else pwd
+    with pyzipper.AESZipFile(
+        zip_path, "w", compression=pyzipper.ZIP_DEFLATED,
+        compresslevel=compression_level, encryption=pyzipper.WZ_AES,
+        allowZip64=True,
+    ) as zf:
+        zf.setpassword(pwd_bytes)
         for i, sp in enumerate(norm_srcs):
             if not os.path.exists(sp):
-                continue
+                raise FileNotFoundError(sp)
             prefix = norm_prefixes[i] if i < len(norm_prefixes) else ""
             arcname = os.path.join(prefix, os.path.basename(sp)).replace("\\", "/") if prefix else os.path.basename(sp)
             _stream_write_file(zf, sp, arcname, on_bytes_written)

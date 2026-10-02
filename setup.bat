@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 echo ========================================================
 echo  File Transfer Automation System - Environment Setup
 echo ========================================================
@@ -16,13 +17,22 @@ if %errorlevel% neq 0 (
 
 echo [1/3] Creating virtual environment (.venv)...
 python -m venv .venv
+if errorlevel 1 goto setup_failed
 
 echo [2/3] Installing system dependencies...
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\pip.exe install -r requirements.txt
+if errorlevel 1 goto setup_failed
 
 echo.
 echo [3/3] Setup complete!
 echo You can now launch the app anytime by double-clicking 'run_app.bat'.
 echo.
 pause
+
+exit /b 0
+
+:setup_failed
+echo [ERROR] Setup failed. Check the messages above before launching.
+pause
+exit /b 1

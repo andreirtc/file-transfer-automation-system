@@ -449,10 +449,25 @@ class SettingsDialog(MessageBoxBase):
         self._zip_password.setMinimumHeight(32)
         f_zip.addRow(BodyLabel("Zip Password:", container), self._zip_password)
 
+        # Keep the two mode controls consistent so Save cannot silently undo a choice.
+        self._transfer_mode.currentIndexChanged.connect(
+            lambda _: self._batch_compression.setChecked(self._transfer_mode.currentData() == "zip"))
+        self._batch_compression.checkedChanged.connect(
+            lambda checked: self._transfer_mode.setCurrentIndex(1 if checked else 0))
+
         scroll.setWidget(container)
         self.viewLayout.addWidget(scroll)
 
     def validate(self) -> bool:
+        from datetime import datetime
+        try:
+            for text in (self._cycle_start.text().strip(), self._cycle_end.text().strip()):
+                if len(text) != 5:
+                    raise ValueError("Use HH:MM")
+                datetime.strptime(text, "%H:%M")
+        except ValueError:
+            MessageBox("Invalid Cycle Hours", "Enter valid hours in HH:MM format, for example 18:00 and 12:00.", self.window()).exec()
+            return False
         self._config.set("stability_check_interval", self._stability_interval.value())
         self._config.set("required_stable_checks", self._stable_checks.value())
         self._config.set("max_retries", self._max_retries.value())

@@ -100,3 +100,11 @@ def qapp():
     if app is None:
         app = QApplication(sys.argv)
     return app
+
+@pytest.fixture(autouse=True)
+def isolate_report_output(tmp_path, monkeypatch):
+    """Keep regression-generated Excel files out of the operator's report folder."""
+    from services.report_service import ReportService
+    report_dir = tmp_path / 'reports'
+    report_dir.mkdir()
+    monkeypatch.setattr(ReportService, 'reports_dir', property(lambda self: report_dir))

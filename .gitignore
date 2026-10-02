@@ -37,3 +37,10 @@ demo_oracle_test/
 # OS
 Thumbs.db
 .DS_Store
+
+# Local audit and pytest artifacts
+.audit*/
+.test-temp/
+.pytest_cache/
+dist/FileTransferAutomationSystem/DemoLab/
+dist/FileTransferAutomationSystem/PerformanceLab/

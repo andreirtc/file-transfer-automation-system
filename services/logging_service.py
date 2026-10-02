@@ -103,6 +103,10 @@ def setup_logging(
     console_handler.setLevel(console_level)
     console_handler.setFormatter(brief_format)
     root_logger.addHandler(console_handler)
+    # Capture warnings/errors from app and transfer loggers in the advertised error log.
+    _add_rotating_handler(root_logger, log_dir / "error.log", detailed_format,
+                          logging.WARNING, max_bytes, backup_count)
+    error_logger.propagate = False
 
 
 def _add_rotating_handler(

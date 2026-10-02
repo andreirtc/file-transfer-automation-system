@@ -5,7 +5,7 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('config', 'config'), ('templates', 'templates')],
+    datas=[('assets', 'assets'), ('docs', 'docs'), ('templates', 'templates')],
     hiddenimports=['pyzipper', 'pyminizip', 'watchdog', 'qfluentwidgets', 'openpyxl', 'core.compression_worker'],
     hookspath=[],
     hooksconfig={},
@@ -14,6 +14,10 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Qt uses Windows' native ICU ABI. A Poppler/Conda ICU on PATH can expose
+# version-suffixed exports and break frozen QtWidgets imports. Never bundle it.
+a.binaries = [entry for entry in a.binaries
+              if entry[0].lower() not in {"icuuc.dll", "icudt78.dll"}]
 pyz = PYZ(a.pure)
 
 exe = EXE(

@@ -56,6 +56,7 @@ class TransferEngine:
         self,
         record: TransferRecord,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> TransferResult:
         """
         Execute a complete file transfer: safety → copy → verify → finalize.
@@ -79,15 +80,29 @@ class TransferEngine:
         dest_temp = dest_dir / temp_name
 
         result = TransferResult(success=False, record=record)
+        original_progress = progress_callback
+        def check_cancel():
+            if cancel_check and cancel_check():
+                raise InterruptedError("Transfer stopped by operator")
+        def cancellable_progress(phase, current, total):
+            check_cancel()
+            if original_progress:
+                original_progress(phase, current, total)
+        if cancel_check:
+            progress_callback = cancellable_progress
 
         try:
+            check_cancel()
             # ---- Pre-flight checks ----
-            result = self._preflight_checks(source, dest_dir, dest_final, record)
+            result = self._preflight_checks(source, dest_dir, dest_final, record, progress_callback)
             if not result.success and result.error_message:
                 return result
 
             # If preflight returned was_conflict, bubble that up
             if result.was_conflict:
+                return result
+
+            if record.status in (FileStatus.COMPLETED, FileStatus.SKIPPED):
                 return result
 
             # ---- Final safety check ----
@@ -99,6 +114,8 @@ class TransferEngine:
                 logger.warning("Transfer aborted: %s", result.error_message)
                 return result
 
+            result.success = False  # Preflight success is not transfer success.
+
             # ---- Mark as transferring ----
             record.status = FileStatus.TRANSFERRING
             record.transfer_started = datetime.now()
@@ -107,6 +124,8 @@ class TransferEngine:
             logger.info("Copying %s → %s", source.name, dest_temp.name)
             try:
                 self._copy_with_progress(source, dest_temp, progress_callback)
+            except InterruptedError:
+                raise
             except OSError as e:
                 self._cleanup_temp(dest_temp)
                 record.status = FileStatus.FAILED
@@ -129,6 +148,7 @@ class TransferEngine:
             verification = self._integrity.verify_transfer(
                 source, dest_temp, verify_cb, smart_mode=smart_mode
             )
+            check_cancel()
             result.verification = verification
 
             if not verification.success:
@@ -148,9 +168,7 @@ class TransferEngine:
 
             # ---- Finalize: rename temp → final ----
             try:
-                if dest_final.exists():
-                    dest_final.unlink()
-                dest_temp.rename(dest_final)
+                os.replace(dest_temp, dest_final)
                 try:
                     shutil.copystat(source, dest_final)
                 except OSError:
@@ -181,6 +199,14 @@ class TransferEngine:
             )
             return result
 
+        except InterruptedError as e:
+            self._cleanup_temp(dest_temp)
+            record.status = FileStatus.READY
+            record.error_message = str(e)
+            record.verification_passed = None
+            result.success = False
+            result.error_message = str(e)
+            return result
         except Exception as e:
             # Catch-all for unexpected errors
             self._cleanup_temp(dest_temp)
@@ -194,6 +220,7 @@ class TransferEngine:
         self,
         source: str | Path,
         destination: str | Path,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> tuple[bool, bool, str, str]:
         """
         Check whether the destination file exists and if it conflicts.
@@ -214,9 +241,11 @@ class TransferEngine:
         # Destination exists — check if it matches
         try:
             match, src_hash, dst_hash = self._integrity.compare_files(
-                source, destination
+                source, destination, progress_callback
             )
             return (True, not match, src_hash, dst_hash)
+        except InterruptedError:
+            raise
         except OSError as e:
             logger.warning("Conflict check failed: %s", e)
             return (True, True, "", "")
@@ -227,6 +256,7 @@ class TransferEngine:
         dest_dir: Path,
         dest_final: Path,
         record: TransferRecord,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> TransferResult:
         """Run pre-flight checks before copying."""
         result = TransferResult(success=False, record=record)
@@ -264,6 +294,28 @@ class TransferEngine:
         except OSError:
             pass
 
+        if self._config and dest_final.exists() and not getattr(record, "overwrite_approved", False):
+            exists, conflict, source_hash, dest_hash = self.check_destination_conflict(source, dest_final, progress_callback)
+            if not conflict:
+                record.status = FileStatus.COMPLETED
+                record.transfer_completed = datetime.now()
+                record.source_hash, record.destination_hash = source_hash, dest_hash
+                record.verification_passed = True
+                result.success = True
+                result.destination_already_matched = True
+                return result
+            policy = self._config.overwrite_policy
+            if policy == "skip":
+                record.status = FileStatus.SKIPPED
+                record.error_message = "Destination differs; skipped by overwrite policy"
+                result.success = True
+                return result
+            if policy != "overwrite":
+                record.status = FileStatus.CONFLICT
+                record.error_message = "Destination differs; operator decision required"
+                result.was_conflict = True
+                return result
+
         # No errors — return success=True to indicate preflight passed
         result.success = True
         return result
@@ -282,13 +334,17 @@ class TransferEngine:
         chunk_size = max(self._integrity._chunk_size, 1024 * 1024 * 16 if total_size > 1024 * 1024 * 1024 else 1048576)
         last_callback_time = 0.0
 
-        with open(source, "rb") as src, open(destination, "wb") as dst:
+        # Reuse a single buffer: allocating a new large bytes object on every
+        # read can hold two chunks at once and multiply RAM across workers.
+        buffer = bytearray(min(chunk_size, max(total_size, 1)))
+        view = memoryview(buffer)
+        with open(source, "rb", buffering=0) as src, open(destination, "wb") as dst:
             while True:
-                chunk = src.read(chunk_size)
-                if not chunk:
+                read_size = src.readinto(buffer)
+                if not read_size:
                     break
-                dst.write(chunk)
-                bytes_copied += len(chunk)
+                dst.write(view[:read_size])
+                bytes_copied += read_size
                 if progress_callback:
                     now = time.time()
                     if bytes_copied == total_size or (now - last_callback_time) >= 0.1:

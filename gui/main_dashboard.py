@@ -126,6 +126,7 @@ class JobOverviewCard(QFrame):
         top_layout.setSpacing(8)
 
         self._name_label = SubtitleLabel(self.job.name, self)
+        self._name_label.setWordWrap(True)
         top_layout.addWidget(self._name_label)
 
         # Status Badge
@@ -162,12 +163,18 @@ class JobOverviewCard(QFrame):
 
         top_layout.addStretch()
 
+        layout.addLayout(top_layout)
+        top_layout = QHBoxLayout()
+        top_layout.setSpacing(8)
+        top_layout.addStretch()
+
         # Action Buttons
         self._btn_toggle_monitor = PushButton("Start Monitoring", self, FluentIcon.PLAY)
         self._btn_toggle_monitor.clicked.connect(lambda: self.toggle_monitor_clicked.emit(self.job.id))
         top_layout.addWidget(self._btn_toggle_monitor)
 
-        self._btn_sync = PushButton("Sync Now", self, FluentIcon.SYNC)
+        self._btn_sync = PushButton("Sync All Dates", self, FluentIcon.SYNC)
+        self._btn_sync.setToolTip("Request all untransferred files across batch dates; stability checks still apply")
         self._btn_sync.clicked.connect(lambda: self.sync_clicked.emit(self.job.id))
         top_layout.addWidget(self._btn_sync)
 
@@ -203,6 +210,8 @@ class JobOverviewCard(QFrame):
         path_layout.addWidget(lbl_src, 0, 0)
 
         self._src_label = BodyLabel(self.job.source_folder, self)
+        self._src_label.setWordWrap(True)
+        self._src_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._src_label.setStyleSheet("color: #1E293B; font-size: 12px;")
         path_layout.addWidget(self._src_label, 0, 1)
 
@@ -211,6 +220,8 @@ class JobOverviewCard(QFrame):
         path_layout.addWidget(lbl_dst, 1, 0)
 
         self._dst_label = BodyLabel(self.job.destination_folder, self)
+        self._dst_label.setWordWrap(True)
+        self._dst_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._dst_label.setStyleSheet("color: #1E293B; font-size: 12px;")
         path_layout.addWidget(self._dst_label, 1, 1)
 
@@ -622,6 +633,8 @@ class MainDashboardWidget(QWidget):
         header_text_layout.addWidget(self._subtitle_label)
         header_layout.addLayout(header_text_layout)
 
+        self._content_layout.addLayout(header_layout)
+        header_layout = QHBoxLayout()
         header_layout.addStretch()
 
         self._btn_start_all = PushButton("Start All", container, FluentIcon.PLAY)

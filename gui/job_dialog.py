@@ -8,6 +8,7 @@ the job name, source folder, destination folder, and options.
 from __future__ import annotations
 
 from pathlib import Path
+from copy import deepcopy
 from typing import Optional
 
 from PySide6.QtCore import Qt
@@ -46,7 +47,7 @@ class JobDialog(MessageBoxBase):
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self._job = job or TransferJob()
+        self._job = deepcopy(job) if job else TransferJob()
         self._is_new = job is None
 
         title = "Add Transfer Job" if self._is_new else "Edit Transfer Job"

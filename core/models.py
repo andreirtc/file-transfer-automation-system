@@ -248,6 +248,7 @@ class TransferResult:
     verification: Optional[VerificationResult] = None
     error_message: str = ""
     was_conflict: bool = False
+    destination_already_matched: bool = False
 
 
 class ConflictResolution(enum.Enum):
